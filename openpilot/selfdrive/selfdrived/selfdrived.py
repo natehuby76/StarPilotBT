@@ -1268,8 +1268,11 @@ class SelfdriveD:
     user_disable = self.events.contains(ET.USER_DISABLE)
     if user_disable:
       from opendbc.car.hyundai.canfd_angle_aol import qualified as angle_qualified
+      from opendbc.car.hyundai.canfd_stock_aol import qualified as stock_canfd_qualified
 
-      if angle_qualified(self.CP, marked_only=True):
+      if (angle_qualified(self.CP, marked_only=True) or
+          self.CP.brand == 'hyundai' and CS.brakePressed and len(self.CP.safetyConfigs) == 1 and
+          stock_canfd_qualified(self.CP, marked_only=True)):
         native = current_native(self.sm, self.CP, now_ns=now_ns, axis_session_id=self.aol_session_id)
         if stock_lateral_role(self, CS, native, intent, allow_independent_cancel=True,
                               allow_independent_brake=True, now_ns=now_ns):

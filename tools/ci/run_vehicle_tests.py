@@ -33,6 +33,11 @@ DEBUG_SAFETY_CLASS_TARGETS = {
 
 
 RELEASE_TARGETS = (
+  "openpilot/starpilot/aol/tests/test_angle_stop_native_feedback.py",
+  "openpilot/starpilot/aol/tests/test_angle_stop_fault_guards.py",
+  "openpilot/starpilot/aol/tests/test_torque_stock_cruise_transition.py",
+  "openpilot/starpilot/aol/tests/test_torque_stock_brake_guards.py",
+  "opendbc_repo/opendbc/safety/tests/test_hyundai_torque_stock_transition.py",
   "openpilot/starpilot/aol/tests/test_angle_stock_cruise_transition.py",
   "opendbc_repo/opendbc/safety/tests/test_hyundai_stock_cruise_transition.py",
   "opendbc_repo/opendbc/car/hyundai/tests/test_ioniq5pe_replacement_duplicates.py",

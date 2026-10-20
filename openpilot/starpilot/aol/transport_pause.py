@@ -12,13 +12,13 @@ def cp_identity(cp):
           tuple((int(c.safetyModel.raw), int(c.safetyParam)) for c in cp.safetyConfigs))
 
 
-def _configured_transport_native(sm, cp, session, now_ns, native=None, *, require_longitudinal=True):
+def _configured_transport_native(sm, cp, session, now_ns, native=None, *, require_longitudinal=True, allow_restricted_lateral=False):
   """Validate the exact live native configuration and every Panda."""
   try:
     validated_here = native is None
     native = native or current_native(sm, cp, now_ns=now_ns, axis_session_id=session)
     if (not session or native is None or str(native.axisSessionId) != session or
-        native.requestedLateral and not native.lateralAllowed or
+        native.requestedLateral and not native.lateralAllowed and not allow_restricted_lateral or
         require_longitudinal and native.requestedLongitudinal and not native.longitudinalAllowed):
       return None
     coherent = bool(native.pandaInventory)
@@ -109,12 +109,16 @@ def stock_lateral_off(cp, cs, native, *, allow_independent_cancel=False, allow_i
   from openpilot.starpilot.nostalgia import physical_cancel
   from opendbc.car.hyundai.canfd_angle_aol import qualified as angle_qualified
 
+  from opendbc.car.hyundai.canfd_stock_aol import qualified as stock_canfd_qualified
+
   independent_angle = angle_qualified(cp, marked_only=True)
+  independent_brake = independent_angle or (allow_independent_brake and cp.brand == 'hyundai' and
+                                             len(cp.safetyConfigs) == 1 and stock_canfd_qualified(cp, marked_only=True))
   return bool(cp.pcmCruise and cs.cruiseState.available and
-    (not cs.cruiseState.enabled or independent_angle and allow_independent_brake and cs.brakePressed) and
+    (not cs.cruiseState.enabled or independent_brake and allow_independent_brake and cs.brakePressed) and
     cs.canValid and not cs.canTimeout and not cs.steerFaultPermanent and not cs.steerFaultTemporary and
     not cs.accFaulted and not cs.doorOpen and not cs.seatbeltUnlatched and
-    (not cs.brakePressed or independent_angle and allow_independent_brake) and
+    (not cs.brakePressed or independent_brake and allow_independent_brake) and
     not cs.regenBraking and (not cs.gasPressed or independent_angle) and
     (not physical_cancel(cs, cp) or independent_angle and allow_independent_cancel) and
     native is not None and native.requestedLateral and native.lateralAllowed and not native.requestedLongitudinal)
@@ -904,6 +908,35 @@ class TransportPauseFeedback:
     self.awaiting = True
     return True
 
+  def _angle_stop_intent_current(self, sm, cp, cs, axis, stamp, now_ns, *, latched, producer):
+    from opendbc.car.structs import car
+    from opendbc.car.hyundai.canfd_angle_aol import qualified, temporary_restriction
+
+    if (not qualified(cp, marked_only=True) or cs.gearShifter != car.CarState.GearShifter.drive or
+        not temporary_restriction(cp, cs) or cs.steerFaultTemporary or cs.steerFaultPermanent or
+        not latched or self.failed or self.paused or self.pending_event or self.retention_started_ns or
+        not self.lateral_only_baseline or not self.lateral_inventory or not self.lateral_baseline_ns or
+        not self.session or axis.sessionId != self.session or str(axis.faultReason) != 'none' or
+        not producer or producer != self.availability_producer or
+        axis.intentProducerSessionId != producer or axis.intentIntegrityEpoch != self.availability_epoch or
+        not axis.desiredLateral or not axis.nativeAcknowledged or
+        axis.desiredLongitudinal or axis.longitudinalActive or
+        not 0 < axis.sourceCarStateMonoTime <= stamp <= now_ns or
+        now_ns - axis.sourceCarStateMonoTime > AXIS_MAX_AGE_NS):
+      return False
+    event_ns = int(sm.logMonoTime['onroadEvents'])
+    if (not sm.seen['onroadEvents'] or not sm.valid['onroadEvents'] or not sm.alive['onroadEvents'] or
+        not 0 < event_ns <= now_ns or now_ns - event_ns > 1_500_000_000 or
+        any(event.immediateDisable or event.softDisable or event.userDisable and
+            event.name not in (log.OnroadEvent.EventName.pcmDisable, log.OnroadEvent.EventName.pedalPressed)
+            for event in sm['onroadEvents'])):
+      return False
+    native = _configured_transport_native(sm, cp, self.session, now_ns, allow_restricted_lateral=True)
+    return bool(native is not None and native.pandaInventory and native.requestedLateral and
+      not native.lateralAllowed and not native.requestedLongitudinal and
+      native.observedMonoTime >= self.lateral_native_ns and
+      (native.pandaSerial, tuple(p.hardwareSerial for p in native.pandaInventory)) == self.lateral_inventory)
+
   def observe(self, sm, cp, cs, now_ns, *, latched=True, cancel_source_ns=0, brake_source_ns=0,
               gm_withdrawal_source_ns=0, intent_producer_session='', main_arm_ns=0):
     self.temporary_host_qualified = False
@@ -937,6 +970,10 @@ class TransportPauseFeedback:
           # the new request nor renews any command, native or healthy lease.
           self.sequence, self.signature = int(axis.sequence), signature
           return False
+      if current and continuity and self._angle_stop_intent_current(sm, cp, cs, axis, stamp, now_ns,
+          latched=latched, producer=intent_producer_session):
+        self.sequence, self.signature = int(axis.sequence), signature
+        return False
       if current and continuity and (reason == 'critical' or
           getattr(sm, 'updated', {}).get('onroadEvents', False)) and self._temporary_lag_intent_current(sm, cp, cs, axis, stamp, now_ns,
           latched=latched, producer=intent_producer_session, signature=signature):
