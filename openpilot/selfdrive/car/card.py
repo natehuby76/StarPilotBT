@@ -611,7 +611,8 @@ class Car:
           native,
           latched=self.aol_card_intent.allowed_latch,
           panda_ready=angle_panda_ready,
-          restricted=restrict(self.CP, CS) or ((mazda_aol or preap_aol) and self.aol_card_intent.pause_lateral),
+          restricted=restrict(self.CP, CS) or ((angle_aol or mazda_aol or preap_aol) and self.aol_card_intent.pause_lateral) or
+            (angle_aol and CS.brakePressed and not CS.standstill and CS.vEgo < self.aol_settings.pause_brake_mps),
           now_ns=now_ns,
           pending_since_ns=getattr(self, '_angle_aol_pending_since_ns', 0),
           **preap_observation,

@@ -1266,6 +1266,13 @@ class SelfdriveD:
     intent = getattr(self, 'aol_last_intent', None)
     companion = getattr(self, 'aol_intent_companion', None)
     user_disable = self.events.contains(ET.USER_DISABLE)
+    if user_disable:
+      from opendbc.car.hyundai.canfd_angle_aol import qualified as angle_qualified
+
+      if angle_qualified(self.CP, marked_only=True):
+        native = current_native(self.sm, self.CP, now_ns=now_ns, axis_session_id=self.aol_session_id)
+        if stock_lateral_role(self, CS, native, intent):
+          user_disable = False
     if user_disable and self.held_axis_override_wait(CS, proof, now_ns)[0]:
       # A moving held brake repeats pedalPressed while ordinary control is
       # already disabled. Its existing lateral-only override is not a new edge.
@@ -1630,12 +1637,18 @@ class SelfdriveD:
     if len(owners) != 1:
       return False
     from openpilot.starpilot.car.gm.aol import native_accepts_cp as gm_native_accepts_cp
+    from openpilot.starpilot.car.toyota.aol import qualified as toyota_aol_qualified
     # Pandad reads health before its final native permission read. A GM driver
     # withdrawal between those reads legitimately leaves the earlier health
     # controlsAllowed true. For an admitted OP-long GM profile, the current
     # LAT-only native mask itself proves controls_allowed has gone false.
     # Keep LONG withdrawn and leave disagreement to the ordinary mismatch owner.
+    # Toyota's native LONG mask also checks gas, brake and belt independently
+    # of controls_allowed. Health and that mask may precede the parsed pedal
+    # edge: honor LONG withdrawal while the existing native LAT grant stands.
+    # The exact Toyota policy and all proof/health checks above remain required.
     return bool(gm_native_accepts_cp(self.CP, native.safetyModel, native.safetyParam) or
+                toyota_aol_qualified(self.CP, marked_only=True) or
                 not native.pandaInventory[owners[0]].controlsAllowed and
                 not self.sm['pandaStates'][owners[0]].controlsAllowed)
 

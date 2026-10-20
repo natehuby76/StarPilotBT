@@ -22,11 +22,17 @@ from tools import test_runner
 from tools.ci import vehicle_pytest
 
 DEBUG_SAFETY_CLASS_TARGETS = {
+  "opendbc_repo/opendbc/safety/tests/test_hyundai_classic_cancel_joined.py": (
+    "opendbc_repo/opendbc/safety/tests/test_hyundai_classic_cancel_joined.py::TestClassicCancelDebug",
+  ),
   "opendbc_repo/opendbc/safety/tests/test_ioniq5pe_paired_native.py": ("opendbc_repo/opendbc/safety/tests/test_ioniq5pe_paired_native.py::TestPELongDebug",),
 }
 
 
 RELEASE_TARGETS = (
+  "opendbc_repo/opendbc/safety/tests/test_hyundai_classic_cancel_joined.py::TestClassicCancelReleaseDenied",
+  "opendbc_repo/opendbc/car/hyundai/tests/test_classic_cancel_construction.py",
+  "openpilot/starpilot/aol/tests/test_classic_cancel_guards.py",
   "opendbc_repo/opendbc/safety/tests/test_ioniq5pe_paired_native.py::TestPELongReleaseDenied",
   "opendbc_repo/opendbc/safety/tests/test_tesla_preap_stock.py",
   "opendbc_repo/opendbc/car/tesla/tests/test_preap_startup.py",
@@ -49,6 +55,7 @@ RELEASE_TARGETS = (
   "opendbc_repo/opendbc/safety/tests/test_nexo_stock_aol.py",
   "opendbc_repo/opendbc/safety/tests/test_hyundai_stock_angle_aol.py",
   "opendbc_repo/opendbc/car/hyundai/tests/test_stock_angle_aol.py",
+  "openpilot/starpilot/aol/tests/test_stock_angle_pedals.py",
   "opendbc_repo/opendbc/car/hyundai/tests/test_g90_startup.py",
   "opendbc_repo/opendbc/car/hyundai/tests/test_shared_session_recovery_contract.py",
   "opendbc_repo/opendbc/car/hyundai/tests/test_ev9_ready.py",

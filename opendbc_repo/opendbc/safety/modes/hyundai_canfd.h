@@ -359,7 +359,7 @@ static uint8_t hyundai_angle_aol_permission_mask(void) {
   const bool gear_current = hyundai_angle_aol_gear_seen &&
     (safety_get_ts_elapsed(microsecond_timer_get(), hyundai_angle_aol_gear_ts) <= 100000U);
   return (((request & 1U) != 0U) && gear_current && hyundai_angle_aol_drive && vehicle_moving &&
-         !hyundai_angle_aol_eps_fault && !brake_pressed) ? 1U : 0U;
+         !hyundai_angle_aol_eps_fault) ? 1U : 0U;
 }
 
 static void aol_ioniq6_rx_invalid(void) {

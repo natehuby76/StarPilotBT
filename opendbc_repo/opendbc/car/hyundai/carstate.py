@@ -326,6 +326,25 @@ class CarState(CarStateBase):
     else:
       self.lkas11 = copy.copy(cp_cam.vl["LKAS11"])
     self.clu11 = copy.copy(cp.vl["CLU11"])
+    from opendbc.car.hyundai.classic_long_aol import independent_buttons_qualified
+    self.ev6_aol_samples = ()
+    self.ev6_aol_source_healthy = False
+    if independent_buttons_qualified(self.CP):
+      from opendbc.can.parser import MAX_BAD_COUNTER
+      source = cp.message_states.get(cp.dbc.name_to_msg['CLU11'].address)
+      self.ev6_aol_sample_stamp_ns = int(source.timestamps[-1]) if source is not None and source.timestamps else 0
+      self.ev6_aol_timeout_ns = int(source.timeout_threshold) if source is not None else 0
+      now = cp._last_update_nanos
+      bus_timeout = cp.bus_timeout
+      self.ev6_aol_source_healthy = bool(
+        not bus_timeout and source is not None and source.timestamps
+        and source.valid(now, bus_timeout) and source.counter_fail < MAX_BAD_COUNTER
+        and 0 < self.ev6_aol_sample_stamp_ns <= now
+        and now - self.ev6_aol_sample_stamp_ns <= source.timeout_threshold)
+      values = cp.vl_all['CLU11']
+      self.ev6_aol_samples = tuple((main, 0, cruise) for main, cruise in zip(
+        values['CF_Clu_CruiseSwMain'], values['CF_Clu_CruiseSwState'], strict=True))
+
     self.steer_state = cp.vl["MDPS12"]["CF_Mdps_ToiActive"]  # 0 NOT ACTIVE, 1 ACTIVE
     prev_cruise_buttons = self.cruise_buttons[-1]
     prev_main_buttons = self.main_buttons[-1]
