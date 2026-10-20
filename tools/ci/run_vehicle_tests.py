@@ -22,6 +22,9 @@ from tools import test_runner
 from tools.ci import vehicle_pytest
 
 DEBUG_SAFETY_CLASS_TARGETS = {
+  "opendbc_repo/opendbc/safety/tests/test_hyundai_main_rearm.py": (
+    "opendbc_repo/opendbc/safety/tests/test_hyundai_main_rearm.py::TestHkgMainDebug",
+  ),
   "opendbc_repo/opendbc/safety/tests/test_hyundai_classic_cancel_joined.py": (
     "opendbc_repo/opendbc/safety/tests/test_hyundai_classic_cancel_joined.py::TestClassicCancelDebug",
   ),
@@ -30,6 +33,16 @@ DEBUG_SAFETY_CLASS_TARGETS = {
 
 
 RELEASE_TARGETS = (
+  "openpilot/starpilot/aol/tests/test_angle_stock_cruise_transition.py",
+  "opendbc_repo/opendbc/safety/tests/test_hyundai_stock_cruise_transition.py",
+  "opendbc_repo/opendbc/car/hyundai/tests/test_ioniq5pe_replacement_duplicates.py",
+  "opendbc_repo/opendbc/car/hyundai/tests/test_ioniq5pe_pending_startup.py",
+  "opendbc_repo/opendbc/safety/tests/test_hyundai_angle_cancel.py",
+  "openpilot/starpilot/aol/tests/test_angle_cancel.py",
+  "openpilot/starpilot/aol/tests/test_angle_cancel_batches.py",
+  "openpilot/starpilot/aol/tests/test_angle_brake_deadline.py",
+  "opendbc_repo/opendbc/safety/tests/test_hyundai_main_rearm.py::TestHkgMainRelease",
+  "opendbc_repo/opendbc/car/hyundai/tests/test_long_main_buttons.py",
   "opendbc_repo/opendbc/safety/tests/test_hyundai_classic_cancel_joined.py::TestClassicCancelReleaseDenied",
   "opendbc_repo/opendbc/car/hyundai/tests/test_classic_cancel_construction.py",
   "openpilot/starpilot/aol/tests/test_classic_cancel_guards.py",

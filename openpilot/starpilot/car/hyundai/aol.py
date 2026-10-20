@@ -302,6 +302,7 @@ def independent_cruise_buttons_supported(CP, *, marked_only=False) -> bool:
   if CP.carFingerprint == HyundaiCAR.KIA_EV6 and CP.openpilotLongitudinalControl:
     return False
   return bool(qualified_sonata_independent(CP) or
+              qualified_angle_aol(CP, marked_only=marked_only) or
               qualified_canfd_stock(CP, marked_only=marked_only) or
               qualified_canfd_long(CP, marked_only=marked_only) or
               qualified_ioniq6(CP) or _stock_ioniq6(CP, marked_only=marked_only))
@@ -309,7 +310,6 @@ def independent_cruise_buttons_supported(CP, *, marked_only=False) -> bool:
 
 def physical_cancel_lateral_allowed(CP, CS, intent, native, *, settings, previous,
                                     source_ns, now_ns, axis_session_id) -> bool:
-  """Retain current HKG torque lateral through only the CANCEL no-entry event."""
   from openpilot.starpilot.aol.runtime import (INTENT_MAX_AGE_NS, AXIS_MAX_AGE_NS, SAFETY_MAX_AGE_NS,
                                                native_inventory_matches_cp)
   try:

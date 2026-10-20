@@ -1271,7 +1271,8 @@ class SelfdriveD:
 
       if angle_qualified(self.CP, marked_only=True):
         native = current_native(self.sm, self.CP, now_ns=now_ns, axis_session_id=self.aol_session_id)
-        if stock_lateral_role(self, CS, native, intent):
+        if stock_lateral_role(self, CS, native, intent, allow_independent_cancel=True,
+                              allow_independent_brake=True, now_ns=now_ns):
           user_disable = False
     if user_disable and self.held_axis_override_wait(CS, proof, now_ns)[0]:
       # A moving held brake repeats pedalPressed while ordinary control is

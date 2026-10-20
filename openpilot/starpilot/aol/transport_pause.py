@@ -105,16 +105,18 @@ def stock_lateral_user_event(cp):
   return log.OnroadEvent.EventName.pcmDisable
 
 
-def stock_lateral_off(cp, cs, native):
-  """Physical stock-cruise OFF role; callers still prove accepted LAT identity."""
+def stock_lateral_off(cp, cs, native, *, allow_independent_cancel=False, allow_independent_brake=False):
   from openpilot.starpilot.nostalgia import physical_cancel
   from opendbc.car.hyundai.canfd_angle_aol import qualified as angle_qualified
 
   independent_angle = angle_qualified(cp, marked_only=True)
-  return bool(cp.pcmCruise and cs.cruiseState.available and not cs.cruiseState.enabled and
+  return bool(cp.pcmCruise and cs.cruiseState.available and
+    (not cs.cruiseState.enabled or independent_angle and allow_independent_brake and cs.brakePressed) and
     cs.canValid and not cs.canTimeout and not cs.steerFaultPermanent and not cs.steerFaultTemporary and
     not cs.accFaulted and not cs.doorOpen and not cs.seatbeltUnlatched and
-    not cs.brakePressed and not cs.regenBraking and (not cs.gasPressed or independent_angle) and not physical_cancel(cs, cp) and
+    (not cs.brakePressed or independent_angle and allow_independent_brake) and
+    not cs.regenBraking and (not cs.gasPressed or independent_angle) and
+    (not physical_cancel(cs, cp) or independent_angle and allow_independent_cancel) and
     native is not None and native.requestedLateral and native.lateralAllowed and not native.requestedLongitudinal)
 
 
