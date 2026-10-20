@@ -102,12 +102,11 @@ class DeveloperLayoutMici(NavScroller):
                                         toggle_callback=self._on_alpha_long_enabled,
                                         description="Use alpha openpilot longitudinal control instead of stock ACC. This may disable Automatic Emergency " +
                                                     "Braking (AEB).")
+    self._navigation_toggle = BigParamControl("navigation (alpha)", "NavigationEnabled",
+                                              description="Turn-by-turn navigation with a route map. Set a destination from comma connect.")
     self._debug_mode_toggle = BigParamControl("ui debug mode", "ShowDebugInfo",
                                               toggle_callback=lambda checked: (gui_app.set_show_touches(checked), gui_app.set_show_fps(checked)),
                                               description="Show touch locations and the UI frame rate.")
-    self._cellular_off_toggle = BigParamControl("disable cellular", "CellularDisabled",
-                                                description="Hang up cellular data and don't redial. The modem stays registered and the " +
-                                                            "SIM is untouched. Remote access over cellular stops until this is turned off.")
 
     self._scroller.add_widgets([
       self._adb_toggle,
@@ -117,7 +116,7 @@ class DeveloperLayoutMici(NavScroller):
       self._joystick_toggle,
       self._alpha_long_toggle,
       self._debug_mode_toggle,
-      self._cellular_off_toggle,
+      self._navigation_toggle,
     ])
 
     # Toggle lists
@@ -127,10 +126,10 @@ class DeveloperLayoutMici(NavScroller):
       ("JoystickDebugMode", self._joystick_toggle),
       ("AlphaLongitudinalEnabled", self._alpha_long_toggle),
       ("ShowDebugInfo", self._debug_mode_toggle),
-      ("CellularDisabled", self._cellular_off_toggle),
+      ("NavigationEnabled", self._navigation_toggle),
     )
     onroad_blocked_toggles = (self._adb_toggle, self._joystick_toggle)
-    release_blocked_toggles = (self._joystick_toggle, self._alpha_long_toggle)
+    release_blocked_toggles = (self._joystick_toggle, self._alpha_long_toggle, self._navigation_toggle)
 
     # Hide non-release toggles on release builds
     for item in release_blocked_toggles:

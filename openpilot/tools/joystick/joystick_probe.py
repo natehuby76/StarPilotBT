@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 joystick_probe.py — identify a gamepad's axis codes and value ranges so you can
 add it to joystick mode.
