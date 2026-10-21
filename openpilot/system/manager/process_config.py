@@ -67,16 +67,12 @@ def vision_slc_development(started: bool, params: Params, CP: car.CarParams) -> 
   return started and feature_enabled(params, CP, 'slc', os.environ) and feature_enabled(params, CP, 'vision', os.environ)
 
 def galaxy_local(started: bool, params: Params, CP: car.CarParams) -> bool:
-  # Keep the authenticated local service reachable across ignition changes.
   return os.getenv("STARPILOT_GALAXY_DISABLE") != "1"
 
 def android_auto_enabled(started: bool, params: Params, CP: car.CarParams) -> bool:
-  # A missing key is typed false. The manager does not start or recover a phone
-  # role until the user enables projection on supported hardware.
   return COMMA_HARDWARE and platform.system() == "Linux" and params.get_bool("AndroidAutoEnabled")
 
 def spotify_enabled(started: bool, params: Params, CP: car.CarParams) -> bool:
-  # One stat of a feature-owned flag; Spotify keeps its settings out of Params.
   from openpilot.starpilot.soloist.paths import enabled
   return COMMA_HARDWARE and platform.system() == "Linux" and enabled()
 
@@ -165,7 +161,7 @@ procs = [
   NativeProcess("_pandad", "openpilot/selfdrive/pandad", ["./pandad"], always_run, enabled=False),
   PythonProcess("calibrationd", "openpilot.selfdrive.locationd.calibrationd", only_onroad),
   PythonProcess("torqued", "openpilot.selfdrive.locationd.torqued", only_onroad),
-  PythonProcess("steerlearnerd", "openpilot.starpilot.flm.steerlearnerd", only_onroad),
+  PythonProcess("steerlearnerd", "openpilot.starpilot.flm.steerlearnerd", only_onroad, restart_on_exit=True),
   PythonProcess("controlsd", "openpilot.selfdrive.controls.controlsd", and_(not_joystick, iscar)),
   PythonProcess("joystickd", "openpilot.tools.joystick.joystickd", or_(joystick, notcar)),
   PythonProcess("selfdrived", "openpilot.selfdrive.selfdrived.selfdrived", only_onroad),
@@ -184,6 +180,7 @@ procs = [
   PythonProcess("radard", "openpilot.selfdrive.controls.radard", only_onroad),
   PythonProcess("hardwared", "openpilot.system.hardware.hardwared", always_run),
   PythonProcess("modem", "openpilot.common.hardware.comma.modem", always_run, enabled=COMMA_HARDWARE),
+  PythonProcess("usage_stats", "openpilot.starpilot.analytics.runtime", always_run, enabled=COMMA_HARDWARE),
   PythonProcess("tombstoned", "openpilot.system.tombstoned", always_run, enabled=not PC),
   PythonProcess("updated", "openpilot.system.updated.updated", only_offroad, enabled=not PC),
   PythonProcess("uploader", "openpilot.system.loggerd.uploader", always_run),

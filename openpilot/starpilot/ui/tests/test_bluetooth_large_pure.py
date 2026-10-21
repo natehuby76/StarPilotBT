@@ -187,8 +187,24 @@ class TestBluetoothLarge(unittest.TestCase):
     self.panel.status = {'available': True, 'powered': True, 'parked': True}
     self.panel._signature = repr((False, True, True, True, None, None, None, ()))
     self.panel._forget('AA:BB')
-    self.assertEqual(self.forgotten, ['AA:BB'])
+    self.assertEqual(self.forgotten, [])
     self.assertIsNotNone(self.panel.queued)
+    self.panel.pending.set_result(self.panel.status)
+    self.panel._tick()
+    self.assertEqual(self.forgotten, [])
+    self.panel.pending.set_result(self.panel.status)
+    self.panel._tick()
+    self.assertEqual(self.forgotten, ['AA:BB'])
+
+  def test_failed_forget_keeps_its_app_key(self):
+    self.panel.show_event()
+    self.panel.status = {'available': True, 'powered': True, 'parked': True}
+    self.panel._forget('AA:BB')
+    self.panel.pending.set_result(self.panel.status)
+    self.panel._tick()
+    self.panel.pending.set_exception(ValueError('Bluetooth forget failed'))
+    self.panel._tick()
+    self.assertEqual(self.forgotten, [])
 
   def test_request_waits_for_snapshot_then_submits_async(self):
     self.panel.show_event()

@@ -23,6 +23,13 @@ def _optional(payload, key, low, high):
   return value if low <= value < high else math.nan
 
 
+def _required(payload, key, low, high, *, strict_low=False):
+  value = _number(payload, key, True)
+  if (value <= low if strict_low else value < low) or value >= high:
+    raise ValueError(f"Invalid {key}")
+  return value
+
+
 def phone_gps(payload, now_ns):
   if not isinstance(payload, dict) or set(payload) - FIELDS:
     raise ValueError("Unexpected location fields")
@@ -37,18 +44,17 @@ def phone_gps(payload, now_ns):
   timestamp = payload.get("timestamp", 0)
   if type(timestamp) is not int or not 0 <= timestamp < 2 ** 53:
     raise ValueError("Invalid timestamp")
-  bearing_accuracy = _optional(payload, "bearingAccuracy", 0, 180)
   return {
     "sourceMonoTime": now_ns - int(age_ms * 1e6),
     "latitude": latitude,
     "longitude": longitude,
-    "altitude": _optional(payload, "altitude", -1000, 10_000),
-    "speed": _optional(payload, "speed", 0, 100),
-    "bearingDeg": _optional(payload, "bearing", 0, 360) if math.isfinite(bearing_accuracy) else math.nan,
+    "altitude": _required(payload, "altitude", -1000, 10_000),
+    "speed": _required(payload, "speed", 0, 100),
+    "bearingDeg": _required(payload, "bearing", 0, 360),
     "horizontalAccuracy": accuracy,
     "verticalAccuracy": _optional(payload, "verticalAccuracy", 0, 10_000),
-    "bearingAccuracyDeg": bearing_accuracy,
-    "speedAccuracy": _optional(payload, "speedAccuracy", 0, 100),
+    "bearingAccuracyDeg": _required(payload, "bearingAccuracy", 0, 180, strict_low=True),
+    "speedAccuracy": _required(payload, "speedAccuracy", 0, 100),
     "unixTimestampMillis": timestamp,
     "hasFix": True,
   }

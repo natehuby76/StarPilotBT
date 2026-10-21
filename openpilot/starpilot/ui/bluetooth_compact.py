@@ -126,6 +126,7 @@ class BluetoothCompact(NavScroller):
     else:
       self.pending = self.executor.submit(self.owner.request, operation, address=address, enabled=enabled)
     self.operation = operation
+    self.pending_address = address
     self.pending_session = getattr(self, "session", None)
     self.return_to_root = return_to_root
     self._rebuild()
@@ -146,6 +147,7 @@ class BluetoothCompact(NavScroller):
   def _tick(self):
     if self.pending is not None and self.pending.done():
       future, operation = self.pending, self.operation
+      address = getattr(self, "pending_address", None)
       self.pending = None
       self.operation = ""
       stale = getattr(self, "pending_session", None) != getattr(self, "session", None)
@@ -163,6 +165,9 @@ class BluetoothCompact(NavScroller):
         if not stale:
           gui_app.push_widget(BigDialog("bluetooth", "Adapter is unavailable. Try again later."))
       else:
+        if operation == "forget" and address:
+          from openpilot.starpilot.galaxy_bluetooth.phone_ui import forget_phone_keys
+          forget_phone_keys(self.phone_pairing_allowed, address)
         if operation != "close" and not stale:
           self.status = result
           self._retire_prompt()
@@ -333,8 +338,6 @@ class BluetoothCompact(NavScroller):
     self._rebuild()
 
   def _forget(self, address: str):
-    from openpilot.starpilot.galaxy_bluetooth.phone_ui import forget_phone_keys
-    forget_phone_keys(self.phone_pairing_allowed, address)
     self._request("forget", address=address, return_to_root=True)
 
   def _open_device(self, address: str):

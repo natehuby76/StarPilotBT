@@ -14,7 +14,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from openpilot.starpilot.soloist.paths import Layout
@@ -100,7 +100,7 @@ def significant(window: dict) -> bool:
 
 
 def stamp(epoch: float) -> str:
-  return datetime.fromtimestamp(epoch, timezone.utc).isoformat(timespec='seconds')
+  return datetime.fromtimestamp(epoch, UTC).isoformat(timespec='seconds')
 
 
 def dropout_event(window: dict, *, output: str = 'unknown') -> dict:
@@ -140,7 +140,7 @@ def send_reports(capture: Callable[..., bool], layout: Layout | None = None, *, 
                  read: Callable[[float], list[str]] = journal, output: str = 'unknown') -> int:
   """Send windows that have gone quiet since the last pass; returns how many reports were accepted."""
   layout = layout or Layout.default()
-  now = time.time() if now is None else now
+  now = time.time() if now is None else now  # noqa: TID251
   path = layout.root / STATE_NAME
   since = _state(path)
   if since is None:

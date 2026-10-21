@@ -14,6 +14,10 @@ const history = { schemaVersion: 1, source: 'local', partialHistory: true, scanI
     { number: 2, segmentName: `${current}--2`, files: { rlog: false, qlog: true, fcamera: false, dcamera: true, ecamera: false, qcamera: true } },
   ] }] }
 assert.equal(validLocalHistory(history), true)
+const longRoute = { ...history, scanIncomplete: false, routes: [{ ...history.routes[0],
+  segmentCount: 82, segments: Array.from({ length: 82 }, (_, number) => ({
+    ...history.routes[0].segments[0], number, segmentName: `${current}--${number}` })) }] }
+assert.equal(validLocalHistory(longRoute), true)
 assert.equal(validLocalHistory({ ...history, source: 'cloud' }), false)
 assert.equal(validLocalHistory({ ...history, routes: [{ ...history.routes[0], routeId: '<script>' }] }), false)
 assert.equal(validLocalHistory({ ...history, routes: [{ ...history.routes[0], segmentCount: 3 }] }), false)

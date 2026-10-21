@@ -53,6 +53,7 @@ from openpilot.starpilot.ui.wheel_feature import WheelFeature, PREFIX as WHEEL_P
 from openpilot.starpilot.longitudinal.output_max import KEY as OUTPUT_MAX_KEY
 from openpilot.starpilot.ui.tesla_screen_feature import TeslaScreenFeature, KEYS as TESLA_SCREEN_KEYS
 from openpilot.starpilot.ui.ford_lateral_feature import FordLateralFeature
+from openpilot.starpilot.ui.preap_radar_feature import PreAPRadarFeature, KEYS as PREAP_RADAR_KEYS, capability as preap_radar_capability
 from openpilot.starpilot.ui.gm_tune_feature import GmTuneFeature, GmTruckFeature, GmEvPresetFeature
 from openpilot.starpilot.car.gm.tune_preferences import KEY as GM_TUNE_KEY
 from openpilot.starpilot.car.gm.radar_recovery import KEY as RADAR_RECOVERY_KEY
@@ -73,7 +74,7 @@ from openpilot.starpilot.controllers.toyota_cruise import capability as toyota_c
 
 BOOL_DEFAULTS = {
   "GMPedalLongitudinal": False, "ForceStops": False, "AlwaysAllowUploads": False, "TurnAssist": True,
-  "ReverseCruise": False, "ToyotaAutoHold": False, "VoltSNG": False, "GMAutoHold": False, "VoltOnePedalMode": False,
+  "ReverseCruise": False, "ToyotaAutoHold": False, "JeepBrakeHold": False, "VoltSNG": False, "GMAutoHold": False, "VoltOnePedalMode": False,
   "RemapCancelToDistance": False, "LongPitch": True, "DisableOpenpilotLongitudinal": False,
   "SpeedLimitController": False, "ShowSpeedLimits": True,
   "SLCConfirmation": False,
@@ -152,6 +153,8 @@ class FeatureSettingsOwner:
     self.tesla_screen = TeslaScreenFeature(self)
     from openpilot.starpilot.ui.gm_cancel_remap_feature import GmCancelRemapFeature
     self.gm_cancel_remap = GmCancelRemapFeature(self)
+
+    self.preap_radar = PreAPRadarFeature(self)
     self.gm_tune = GmTuneFeature(self)
     self.gm_truck = GmTruckFeature(self)
     self.gm_ev_preset = GmEvPresetFeature(self)
@@ -314,6 +317,28 @@ class FeatureSettingsOwner:
               self.authority("parked_preferences") and request.expected in (None, b"0", b"1"))
     return commit_exact(self.params, key=request.key, max_bytes=128, raw=b"1" if request.value == "On" else b"0",
                         expected=request.expected, authorized=authorized, temp_prefix=".gm-stop-").verified
+
+  def _jeep_hold_capability(self):
+    from opendbc.car.chrysler.brake_hold import brake_hold_supported
+    cp = self.vehicle_params()
+    try:
+      if not brake_hold_supported(cp):
+        return None
+      return (str(cp.carFingerprint), int(cp.flags),
+              tuple((str(config.safetyModel), int(config.safetyParam)) for config in cp.safetyConfigs),
+              str(cp.carVin) if cp.carVin else None)
+    except (AttributeError, TypeError, ValueError):
+      return None
+
+  def _apply_jeep_hold(self, request):
+    if not request.confirmation or request.value not in ("Off", "On") or request.dependencies:
+      return False
+    def authorized():
+      return (bool(request.vehicle_fingerprint) and self.vehicle_fingerprint() == request.vehicle_fingerprint and
+              request.capability is not None and request.capability == self._jeep_hold_capability() and
+              self.authority("vehicle") and self.authority("parked_preferences") and request.expected in (None, b"0", b"1"))
+    return commit_exact(self.params, key="JeepBrakeHold", max_bytes=128, raw=b"1" if request.value == "On" else b"0",
+                        expected=request.expected, authorized=authorized, temp_prefix=".jeep-hold-").verified
 
   def _auto_hold_capability(self) -> tuple | None:
     from opendbc.car.toyota.interface import toyota_auto_hold_supported
@@ -710,12 +735,13 @@ class FeatureSettingsOwner:
               FeatureRow("", "Always On Lateral", "Keep steering assistance active independently of cruise control", page=FeaturePage.AOL, available=True),
               FeatureRow("", "Wheel Controls", "Assign steering-wheel buttons and cruise behavior", page=FeaturePage.WHEEL, available=True)]
       if (self._long_pitch_capability() is not None or self._bolt_disable_capability() is not None or
-          self._auto_hold_capability() is not None or self._toyota_radar_capability() is not None or self._pedal_setup_capability() is not None or
+          self._auto_hold_capability() is not None or self._jeep_hold_capability() is not None or
+          self._toyota_radar_capability() is not None or self._pedal_setup_capability() is not None or
           self._gm_stop_capability("VoltSNG") is not None or
           self._gm_stop_capability("GMAutoHold") is not None or self.tesla_screen.capability() is not None or
           self.gm_tune.capability() is not None or self.gm_truck.capability() is not None or
           self.gm_ev_preset.capability() is not None or self.volt_radar.capability() is not None or
-          self.panda_wake.capability() is not None):
+          self.panda_wake.capability() is not None or preap_radar_capability(self.vehicle_params()) is not None):
         rows.append(FeatureRow("", "Vehicle Settings", "Configure features supported by your vehicle", page=FeaturePage.VEHICLE, available=True))
       rows.extend(FeatureRow("", name.title() + " Personality", "", page=name, available=True)
                   for name in (*PROFILE_NAMES, "traffic"))
@@ -737,8 +763,16 @@ class FeatureSettingsOwner:
           reason=("Optional RAV4 2022/2023 receiver. Off retains the original radar choice. Applies after startup; " +
                   "native safety and ECU configuration are unchanged."),
           capability=radar_capability, default_value="Off"))
+      jeep_capability = self._jeep_hold_capability()
+      if jeep_capability is not None:
+        row = self._bool_row("JeepBrakeHold", "Jeep Brake Hold",
+                             configurable and parked and self.authority("vehicle") and self.authority("parked_preferences"),
+                             "Retains a cruise-controlled stop until you press a pedal or cancel cruise. Applies after the next startup")
+        rows.append(replace(row, available=row.available and self._readable("JeepBrakeHold"), capability=jeep_capability))
       rows.extend(self.tesla_screen.rows(parked))
       rows.extend(self.gm_cancel_remap.rows(parked))
+
+      rows.extend(self.preap_radar.rows())
       rows.extend(self.gm_tune.rows(parked))
       rows.extend(self.gm_truck.rows(parked))
       rows.extend(self.gm_ev_preset.rows(parked))
@@ -795,7 +829,7 @@ class FeatureSettingsOwner:
         nostalgia, source, valid = self._value("NostalgiaMode")
         readable = self._readable("NostalgiaMode")
         nostalgia_allowed = configurable and self.authority("aol") and capability is not None and readable
-        rows.append(FeatureRow("NostalgiaMode", "Ioniq 6 Nostalgia Mode — Left Paddle",
+        rows.append(FeatureRow("NostalgiaMode", "Left Paddle Longitudinal Pause",
                                "On" if nostalgia == "1" else "Off" if nostalgia == "0" else "Invalid saved value",
                                source, ("Off", "On") if valid and nostalgia in ("0", "1") else (),
                                available=nostalgia_allowed,
@@ -1175,6 +1209,8 @@ class FeatureSettingsOwner:
       return self.gm_cancel_remap.apply(request)
     if key == "GMPedalLongitudinal":
       return self._apply_pedal_setup(request)
+    if key in PREAP_RADAR_KEYS:
+      return self.preap_radar.apply(request)
     if key in TESLA_SCREEN_KEYS:
       return self.tesla_screen.apply(request)
     if key == GM_TUNE_KEY:
@@ -1193,6 +1229,8 @@ class FeatureSettingsOwner:
       return self._apply_gm_stop(request)
     if key == "LongPitch":
       return self._apply_long_pitch(request)
+    if key == "JeepBrakeHold":
+      return self._apply_jeep_hold(request)
     if key == "ToyotaAutoHold":
       return self._apply_auto_hold(request)
     if key == "ToyotaRadarMode":

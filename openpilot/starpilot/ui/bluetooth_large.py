@@ -135,17 +135,18 @@ class BluetoothLarge(Widget):
     else:
       self.pending = self.executor.submit(self.owner.request, operation, address=address, enabled=enabled)
     self.operation = operation
+    self.pending_address = address
     self.pending_session = getattr(self, "session", None)
     self.return_to_root = return_to_root
     self._rebuild()
 
   def _forget(self, address: str) -> None:
-    forget_phone_keys(self.phone_pairing_allowed, address)
     self._request("forget", address=address)
 
   def _tick(self):
     if self.pending is not None and self.pending.done():
       future, operation = self.pending, self.operation
+      address = getattr(self, "pending_address", None)
       self.pending = None
       self.operation = ""
       stale = getattr(self, "pending_session", None) != getattr(self, "session", None)
@@ -163,6 +164,8 @@ class BluetoothLarge(Widget):
         if not stale:
           gui_app.push_widget(alert_dialog("Adapter is unavailable. Try again later."))
       else:
+        if operation == "forget" and address:
+          forget_phone_keys(self.phone_pairing_allowed, address)
         if operation != "close" and not stale:
           self.status = result
           if operation == "power":

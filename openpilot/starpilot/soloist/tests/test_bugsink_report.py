@@ -61,7 +61,8 @@ def test_failed_delivery_is_retried_next_pass(tmp_path):
 
 
 def test_background_kernel_bluetooth_noise_never_extends_a_window():
-  hci = lambda at: f'{at:.6f} comma kernel: R0: hci0 ACL packet for unknown connection handle 3804'
+  def hci(at):
+    return f'{at:.6f} comma kernel: R0: hci0 ACL packet for unknown connection handle 3804'
   lines = [hci(BASE - 5), rtp(BASE, 12), hci(BASE + 2), hci(BASE + 30), hci(BASE + 31)]
   [window] = report.windows(lines)
   assert window['hci_unknown_handle'] == 1 and window['end'] == BASE

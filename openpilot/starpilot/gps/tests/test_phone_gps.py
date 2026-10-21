@@ -15,8 +15,8 @@ from openpilot.starpilot.navigation.status import NavigationStatusSource
 
 NOW = 101_000_000_000
 PATH = Path(tempfile.gettempdir()) / "phone_gps.json"
-FIX = {"latitude": 40., "longitude": -110., "horizontalAccuracy": 5., "ageMs": 300, "speed": 20., "bearing": 90.,
-       "bearingAccuracy": 10., "timestamp": 1_790_000_000_000}
+FIX = {"latitude": 40., "longitude": -110., "horizontalAccuracy": 5., "ageMs": 300, "altitude": 100., "speed": 20., "bearing": 90.,
+       "bearingAccuracy": 10., "speedAccuracy": 1., "timestamp": 1_790_000_000_000}
 
 
 class Messages:
@@ -105,13 +105,22 @@ def test_phone_handoff_ignores_missing_and_damaged_files(tmp_path):
   assert read_phone_gps(NOW, tmp_path / "bad.json") is None
 
 
-def test_unknown_values_are_not_used():
-  gps = phone_gps({**FIX, "speed": -1, "bearing": 45., "bearingAccuracy": -1, "verticalAccuracy": -1, "altitude": None}, NOW)
-  assert all(math.isnan(gps[key]) for key in ("speed", "bearingDeg", "bearingAccuracyDeg", "verticalAccuracy", "altitude"))
+def test_unknown_vertical_accuracy_is_not_used():
+  gps = phone_gps({**FIX, "verticalAccuracy": -1}, NOW)
+  assert math.isnan(gps["verticalAccuracy"])
+
+
+@pytest.mark.parametrize("field", ("altitude", "speed", "bearing", "bearingAccuracy", "speedAccuracy"))
+def test_partial_fix_is_rejected(field):
+  payload = dict(FIX)
+  payload.pop(field)
+  with pytest.raises(ValueError, match=field):
+    phone_gps(payload, NOW)
 
 
 @pytest.mark.parametrize("change", [{"ageMs": 2500}, {"ageMs": -1}, {"latitude": 91.}, {"latitude": 0., "longitude": 0.},
-                                    {"horizontalAccuracy": 0}, {"latitude": True}, {"extra": 1}, {"timestamp": 1.5}])
+                                    {"horizontalAccuracy": 0}, {"latitude": True}, {"extra": 1}, {"timestamp": 1.5},
+                                    {"speed": -1}, {"altitude": None}, {"bearingAccuracy": 0}, {"speedAccuracy": -1}])
 def test_invalid_fixes_are_rejected(change):
   with pytest.raises(ValueError):
     phone_gps({**FIX, **change}, NOW)
@@ -188,9 +197,11 @@ def test_phone_map_lease_is_capped_without_shortening_source_timeout():
   status.boot_clock = lambda: clock[0] + 1_000_000_000
   publish(sm)
   with patch('openpilot.starpilot.navigation.status.gps_mode', return_value='backup'):
-    assert status.map_position()['validForMs'] == 2500
+    position = status.map_position()
+    assert position is not None and position['validForMs'] == 2500
     clock[0] += 8_000_000_000
-    assert status.map_position()['validForMs'] == 1700
+    position = status.map_position()
+    assert position is not None and position['validForMs'] == 1700
     clock[0] += 2_000_000_000
     assert status.map_position() is None
 

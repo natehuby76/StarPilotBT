@@ -29,3 +29,7 @@ The optional ACC-target and fused-track receivers and DBC preserve firestar5683'
 ## Spotify Bluetooth output
 
 Spotify's Bluetooth output binds the comma's BlueALSA A2DP source to the selected speaker through a process-local ALSA configuration, leaving the system ALSA default, soundd and the warning speaker untouched. That approach is adapted from firestar5683's RoadScore Bluetooth output (`roadscore/prototype/bluetooth_output.py`, firestar5683/StarPilot `RoadScore` at `249eb88b3a397db847e4a595d7e23b7e85d329e5`). The Soloist player itself is never included: each user downloads it from Spotify, and the PulseAudio server that carries its audio is vendored unmodified from Ubuntu (see THIRD_PARTY_NOTICES.md).
+
+## Tesla Pre-AP pedal control
+
+The Pre-AP configuration, pedal codec/feedback, VirtualDAS feedforward table, grade compensation, torque-zero estimator and vehicle-specific gains preserve firestar5683's intentional Dom work, including `7837a3c1aab`, `aed0b7fdb9e9` and pinned `b220a37f4bd119e402225a7aa16a7cd84878d0af`. Original author attribution: firestar5683 <168790843+firestar5683@users.noreply.github.com>. Startup/calibration ownership, current upstream button/PID interfaces and native command bounds are adapted to the current StarPilot architecture; the old permissive native gateway is not transplanted. Existing source/license notices remain intact.
