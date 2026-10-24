@@ -336,7 +336,7 @@
     },
     "openpilot/starpilot/car/subaru/tests/test_avh_callers.py": {
       "cases": 11,
-      "seconds": 72.46299403100011,
+      "seconds": 111.97431766899979,
       "source_sha256": "e571b425c49b1b639a1937669e2541bccf49b96eb01aec96ca34dd825ed7b662"
     },
     "openpilot/starpilot/car/subaru/tests/test_forester_angle_callers.py": {
@@ -660,6 +660,81 @@
       },
       "seconds": 97.41501304299936,
       "source_sha256": "41af76aaa5ad7b6c2e59e37605254aec6b8f36764ad99bf4b7ec1a0a26b297ff"
+    },
+    "openpilot/starpilot/car/toyota/tests/test_radar_lta_pedal.py": {
+      "cases": 45,
+      "seconds": 0.02273932300022352,
+      "source_sha256": "b0057da7bced6268c9bb5ccc8a574a740817fa95375097e5a9443651754d50d5"
+    },
+    "openpilot/starpilot/aol/tests/test_hkg_native_admission.py": {
+      "cases": 91,
+      "seconds": 0.15434600700058354,
+      "source_sha256": "a266ae55df0fc1bf750268f41e7ad967109d49582bd27f490a63840859e92f9f"
+    },
+    "opendbc_repo/opendbc/car/toyota/tests/test_matrix_filter.py": {
+      "cases": 36,
+      "seconds": 0.022069088000023385,
+      "source_sha256": "ef8c62adac2cb38a91df7b79505fd4870aa8554557d43b4795f29777a5b20550"
+    },
+    "openpilot/starpilot/car/toyota/tests/test_prius_retrofit_advert_refusals.py": {
+      "cases": 12,
+      "seconds": 39.6354798669999,
+      "source_sha256": "4647f7ffe0aba34520b38bd4d6e21899abb5fd88eab4247d9a2c28db91b1dbc4"
+    },
+    "openpilot/starpilot/aol/tests/test_fresh_inactive_transport.py": {
+      "cases": 110,
+      "seconds": 0.5750122920010199,
+      "source_sha256": "0bdfd48fe5232a6ff0afbc41433f44bf230febc0b6b72cfe09eb49075d32d011"
+    },
+    "opendbc_repo/opendbc/safety/tests/test_toyota_matrix_stock_aol.py": {
+      "cases": 66,
+      "seconds": 5.071934157999635,
+      "source_sha256": "17f8ed5ffc89dcf15e03deefef9b1ff0e98b86a38517ef40fa79ca1053c90d95"
+    },
+    "openpilot/starpilot/aol/tests/test_crossmake_native_admission.py": {
+      "cases": 397,
+      "seconds": 0.3552008159979323,
+      "source_sha256": "16f762aaf9b1166867577da45a1bd51bcfb104c39d13eaf42076b61dd1c755e4"
+    },
+    "openpilot/starpilot/aol/tests/test_native_observation_admission.py": {
+      "cases": 50,
+      "seconds": 0.06862796200022103,
+      "source_sha256": "94338865c28b4c6367102716150c94711de138c244edd46b431b13fdf59908e4"
+    },
+    "openpilot/starpilot/aol/tests/test_gm_sdgm_cold_main.py": {
+      "cases": 22,
+      "seconds": 0.9709331520006117,
+      "source_sha256": "7fccdffb9a48dc0376e20b0c44380da3ddf09486e6af858ded1977b02b030110"
+    },
+    "openpilot/starpilot/aol/tests/test_gm_main_level_contract.py": {
+      "cases": 224,
+      "seconds": 21.709039396999856,
+      "source_sha256": "0a2785ece6af459893e570358e832396eeaf7d9589d16e48d825b0b8cdb8ac92"
+    },
+    "openpilot/starpilot/car/toyota/tests/test_matrix_stock_caller_native.py": {
+      "cases": 24,
+      "seconds": 72.52401226500012,
+      "source_sha256": "679f77e2ec280e19c6fc51a248815e6a45a14955454eaf7173cc5634646d7cf8"
+    },
+    "openpilot/starpilot/car/toyota/tests/test_prius_retrofit_stock.py": {
+      "cases": 30,
+      "seconds": 0.008651430999861986,
+      "source_sha256": "efddf16b521c316ae39d94354e1f1e728019455cef47f2e1a7fb02fa17aac073"
+    },
+    "openpilot/starpilot/aol/tests/test_hkg_source_policy_cache.py": {
+      "cases": 54,
+      "seconds": 0.30647037500028773,
+      "source_sha256": "878576114a8a302dab13bdd1409d851a33181ba7e3125fdf613d158d77fcde1b"
+    },
+    "openpilot/starpilot/aol/tests/test_hkg_deadline_admission_cache.py": {
+      "cases": 39,
+      "seconds": 0.03289037699966002,
+      "source_sha256": "2de7ce2bbf39b39d6fcb01687f0fb1ea1bfe269b079693836b4514a649f14f15"
+    },
+    "opendbc_repo/opendbc/safety/tests/test_toyota_prius_retrofit_advert.py": {
+      "cases": 128,
+      "seconds": 5.208667722000996,
+      "source_sha256": "e5edc7933ea1a186c1b874deedbd2104a976c1d454241c58251a963b2b5953c0"
     }
   },
   "reference": {
