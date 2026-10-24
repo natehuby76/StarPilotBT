@@ -67,6 +67,7 @@ export const CamerasPage = {
   name: "CamerasPage",
   components: { GxNotice, BluetoothNotice, GalaxySelect, MenuTile },
   props: { mode: { type: String, required: true }, go: { type: Function, required: true },
+    tools: { type: Array, required: true },
     unauthorized: { type: Function, required: true } },
   data: () => ({ bluetooth: bluetoothConnection(), camera: "cabin", image: "", capturing: false, error: "" }),
   created() { this.snapshots = new CameraSnapshotFeed({ publish: (state) => Object.assign(this.$data, state), unauthorized: this.unauthorized }) },
@@ -83,11 +84,10 @@ export const CamerasPage = {
     <div class="gx-view gx-settings" aria-label="Cameras and Monitoring">
       <h2>Cameras &amp; Monitoring</h2>
       <div class="gx-grid">
-        <MenuTile icon="bi-camera-video" title="Blind Spot Camera and Preview" description="Adjust the camera crop with a live cabin preview." :disabled="mode !== 'local'" @select="go('/cameras/pip')" />
-        <MenuTile icon="bi-shield" title="Sentry" description="View motion events, configure saved motion settings, and manage notifications." :disabled="mode !== 'local'" @select="go('/cameras/events')" />
-        <MenuTile icon="bi-eye" title="V-ASM" description="Preview the cabin camera, draw window regions, and adjust visual spot-monitoring choices." :disabled="mode !== 'local'" @select="go('/cameras/vasm')" />
+        <MenuTile v-for="tool in tools" :key="tool.path" :icon="tool.icon" :title="tool.name" :description="tool.description"
+          :disabled="tool.availability === 'local-only' && mode !== 'local'" @select="go(tool.path)" />
       </div>
-      <section class="gx-card gx-panel gx-stack"><h2>Camera Snapshot</h2>
+      <section class="gx-card gx-panel gx-stack"><div class="gx-section__header"><i class="bi bi-camera" aria-hidden="true"></i><span class="gx-section__title">Camera Snapshot</span></div>
         <p>Turn off the vehicle, choose a camera, then take a snapshot.</p>
         <BluetoothNotice v-if="bluetooth" feature="Camera snapshots" />
         <template v-else-if="mode === 'local'">
@@ -163,8 +163,6 @@ export class LiveCameraPreview {
   }
   refresh() {
     if (bluetoothConnection()) return
-    this.cancelTimer(this.warmupTimer)
-    this.cancelTimer(this.timer)
     this.warming = true
     this.lastError = ""
     this.publish({ cameraWarming: true, cameraError: "" })

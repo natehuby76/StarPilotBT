@@ -14,10 +14,18 @@ import java.util.UUID
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 
+/** comma refused GATT access: it has no paired phones, or not this one. */
+class GattDenied(status: Int) : IOException("Bluetooth access denied ($status)")
+/** The link works but comma never answered the authenticated check: it no longer knows this phone's key. */
+class PairingNotRecognized(message: String) : IOException(message)
+private class ResponseTimeout : IOException("Bluetooth response timed out. Check the result before retrying a change.")
+
 /** Serialized GATT operations; a failed mutation is never replayed. Call from a worker thread. */
 @SuppressLint("MissingPermission")
 /** [hello] ({"name", "replaces"}) is sent once with the first request so comma can label this phone and drop its old key. */
 class BleTransport(context: Context, private val key: ByteArray?, private val hello: JSONObject? = null) : Closeable {
+    /** Reports what the connection is doing, so a slow pairing shows where it waits. */
+    @Volatile var onPhase: (String) -> Unit = {}
     private val context: Context = context.applicationContext
     companion object {
         fun uuid(part: String): UUID = UUID.fromString("bd49000$part-6dc1-4de7-a7d0-6cdb441f7650")
@@ -52,6 +60,7 @@ class BleTransport(context: Context, private val key: ByteArray?, private val he
     }
     private fun await(kind: String, seconds: Long = 12): ByteArray {
         val event = events.poll(seconds, TimeUnit.SECONDS) ?: throw IOException("Bluetooth timed out. Reconnect before retrying; a change may already have applied.")
+        if (!closed && event.kind == kind && event.status in setOf(5, 8, 15)) throw GattDenied(event.status)
         if (closed || event.kind != kind || event.status != BluetoothGatt.GATT_SUCCESS) throw IOException("Bluetooth disconnected. Check the result before retrying a change.")
         return event.data
     }
@@ -75,10 +84,15 @@ class BleTransport(context: Context, private val key: ByteArray?, private val he
         try { return connectOnce(preferredAddress) } finally { connecting.decrementAndGet() }
     }
     private fun connectOnce(preferredAddress: String?): String {
-        val device = linkUp(preferredAddress)
+        val device = try { linkUp(preferredAddress) } catch (e: GattDenied) {
+            throw PairingNotRecognized("comma has no paired phone matching this one")
+        }
         try {
             // Authenticate before exposing cached controls. Do not trust the advertised device name.
-            val response = request(JSONObject().put("method", "GET").put("path", "/_bridge/health").apply { hello?.let { put("phone", it) } })
+            val health = JSONObject().put("method", "GET").put("path", "/_bridge/health").apply { hello?.let { put("phone", it) } }
+            val response = try { request(health, 20) } catch (e: ResponseTimeout) {
+                throw PairingNotRecognized("comma didn't recognize this phone's pairing")
+            }
             if (response.getInt("status") != 200) throw IOException("Galaxy Bluetooth authentication failed")
             val previous = active
             active = this
@@ -92,6 +106,7 @@ class BleTransport(context: Context, private val key: ByteArray?, private val he
         if (!adapter.isEnabled) throw IOException("Enable Bluetooth on your phone and comma")
         val remembered = preferredAddress?.let { runCatching { adapter.getRemoteDevice(it) }.getOrNull() }
         val device = remembered ?: run {
+            onPhase("Looking for comma over Bluetooth…")
             val scanner = adapter.bluetoothLeScanner ?: throw IOException("Bluetooth scanner unavailable")
             val found = LinkedBlockingQueue<BluetoothDevice>()
             val scan = object : ScanCallback() {
@@ -105,12 +120,15 @@ class BleTransport(context: Context, private val key: ByteArray?, private val he
         }
         if (closed) throw IOException("Connection canceled")
         events.clear()
+        onPhase("Found comma. Connecting…")
         gatt = device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
         try {
             await("connect", if (remembered != null) 4 else 12)
+            onPhase("Checking comma’s Bluetooth service…")
             if (gatt?.discoverServices() != true) throw IOException("Bluetooth discovery failed")
             await("services")
             if (gatt?.requestMtu(517) == true) packetSize = (ByteBuffer.wrap(await("mtu")).int - 3).coerceIn(20, 512)
+            onPhase("Reading comma’s secure pairing challenge…")
             val info = read("4")
             require(info.size == 17 && info[0].toInt() == 1)
             challenge = info.copyOfRange(1, 17)
@@ -123,9 +141,13 @@ class BleTransport(context: Context, private val key: ByteArray?, private val he
         check(!closed)
         connecting.incrementAndGet()
         try {
-            linkUp(null)
+            try { linkUp(null) } catch (e: GattDenied) {
+                throw IOException("comma's pairing window isn't open. Open Pair phone on comma first (Settings > Bluetooth > Pair phone), then try again.")
+            }
+            onPhase("Pairing: sending this phone’s request to comma…")
             val frame = ByteBuffer.allocate(4 + body.size).putInt(body.size).put(body).array()
             for (packet in BleWire.packets(frame, packetSize)) write(packet)
+            onPhase("Pairing: waiting for comma’s secure reply…")
             val assembler = BleWire.Assembler()
             val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20)
             while (System.nanoTime() < deadline) {
@@ -133,14 +155,15 @@ class BleTransport(context: Context, private val key: ByteArray?, private val he
                 if (packet.contentEquals(byteArrayOf(0))) { Thread.sleep(30); continue }
                 val result = assembler.add(packet)
                 if (result != null) {
+                    onPhase("Pairing: receiving comma’s secure reply…")
                     write(ByteBuffer.allocate(5).put(2).put(packet, 1, 4).array())
                     return challenge to result
                 }
             }
-            throw IOException("comma didn't answer. Tap Pair phone on comma (Settings > Bluetooth) or on the Galaxy Bluetooth page, then try again.")
+            throw IOException("comma didn't answer. Open Pair phone on comma first (Settings > Bluetooth > Pair phone) and keep it open, then tap Add Bluetooth Phone Pairing again.")
         } catch (e: Exception) { close(); throw e } finally { connecting.decrementAndGet() }
     }
-    @Synchronized fun request(value: JSONObject): JSONObject {
+    @Synchronized fun request(value: JSONObject, deadlineSeconds: Long = 90): JSONObject {
         check(!closed && session.isNotEmpty())
         val id = UUID.randomUUID().toString()
         val count = ++counter
@@ -149,7 +172,7 @@ class BleTransport(context: Context, private val key: ByteArray?, private val he
         try {
             for (packet in BleWire.packets(BleWire.seal(request.toString().toByteArray(), key ?: throw IOException("Not paired")), packetSize)) write(packet)
             val assembler = BleWire.Assembler()
-            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(90)
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(deadlineSeconds)
             while (System.nanoTime() < deadline) {
                 val packet = read("3")
                 if (packet.contentEquals(byteArrayOf(0))) { Thread.sleep(30); continue }
@@ -163,7 +186,7 @@ class BleTransport(context: Context, private val key: ByteArray?, private val he
                     return response
                 }
             }
-            throw IOException("Bluetooth response timed out. Check the result before retrying a change.")
+            throw ResponseTimeout()
         } catch (e: Exception) { close(); throw e }
     }
     override fun close() {

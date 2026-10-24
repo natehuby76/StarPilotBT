@@ -6,6 +6,7 @@ import { NavigationMap } from "./navigation-map.js"
 import { MapOperationsPanel } from "./map-operations.js"
 import { OfflineRoadMapsPanel } from "./offline-road-maps.js"
 import { GalaxySelect } from "./galaxy-select.js"
+import { reportSave } from "./save-feedback.js"
 
 export function searchUuid() {
   if (typeof crypto.randomUUID === "function") return crypto.randomUUID()
@@ -295,7 +296,7 @@ export const NavigationPage = {
   name: "NavigationPage",
   components: { GxNotice, BluetoothNotice, MapOperationsPanel, NavigationMap, OfflineRoadMapsPanel, FavoriteChoices, GalaxySelect },
   props: { mode: { type: String, required: true }, unauthorized: { type: Function, required: true },
-    go: { type: Function, default: null }, initialTab: { type: String, default: "route" } },
+    go: { type: Function, default: null }, initialTab: { type: String, default: "route" }, tabs: { type: Array, required: true } },
   data() { return { bluetooth: bluetoothConnection(), data: null, results: [], busy: false, error: "", stale: false, tab: this.initialTab, gpsGuide: "android", query: "", token: "", searched: false,
     suggestions: [], suggestOpen: false, savedSuggestionPlaces: {}, favoritePicker: null, searchPending: false } },
   watch: { initialTab(value) { this.tab = value } },
@@ -374,6 +375,7 @@ export const NavigationPage = {
   },
   beforeUnmount() { document.removeEventListener("visibilitychange", this.visibilityHandler); clearTimeout(this.suggestTimer); this.client.stop(); this.token = "" },
   methods: {
+    reportSave,
     async openGpsSetup() {
       this.selectTab('setup')
       await this.$nextTick()
@@ -469,8 +471,8 @@ export const NavigationPage = {
       <header class="gx-settings__header gx-page-header"><div><h2>Navigation</h2>
         <p>Set a destination, prepare offline maps, and configure navigation and Mapbox.</p></div></header>
       <div class="gx-tabs gx-actions" role="group" aria-label="Navigation tools">
-        <button v-for="item in [{id:'route',label:'Destination'},{id:'maps',label:'Offline Maps'},{id:'setup',label:'Setup'}]" :key="item.id"
-          type="button" class="gx-btn" :class="tab === item.id ? '' : 'gx-btn--tonal'" :aria-pressed="tab === item.id" @click="selectTab(item.id)">{{ item.label }}</button>
+        <button v-for="item in tabs" :key="item.tab"
+          type="button" class="gx-btn" :class="tab === item.tab ? '' : 'gx-btn--tonal'" :aria-pressed="tab === item.tab" @click="selectTab(item.tab)">{{ item.name }}</button>
         <button type="button" class="gx-btn gx-btn--tonal" @click="openGpsSetup">{{ gpsLabel }}</button>
       </div>
       <div v-if="tab === 'maps'" class="gx-navigation__offline">
@@ -481,10 +483,11 @@ export const NavigationPage = {
         <p v-if="mode !== 'local'" class="gx-note">Connect to your comma to set up navigation and choose a destination.</p>
         <GxNotice tone="danger" v-if="error">{{ error }}</GxNotice>
         <section class="gx-card gx-navigation__section">
-          <h3>Navigation</h3>
+          <div class="gx-section__header"><i class="bi bi-compass" aria-hidden="true"></i><span class="gx-section__title">Navigation</span></div>
           <p>Show directions on your comma. Navigation works with every driving model. Route guidance helps prepare for turns; steering and speed control follow your normal engagement settings.</p>
-          <button v-if="data" type="button" class="gx-btn" :class="{'gx-btn--tonal':data.enabled}" :disabled="!controlsAvailable"
-            @click="client.action('configure',{patch:{enabled:!data.enabled}})">{{ data.enabled ? 'Turn off navigation' : 'Turn on navigation' }}</button>
+          <div v-if="data" class="gx-row gx-row--borderless"><span class="gx-row__info gx-row__label">Navigation</span>
+            <label class="gx-switch"><input type="checkbox" role="switch" aria-label="Navigation" :checked="data.enabled" :disabled="!controlsAvailable"
+              @change="$event.target.checked=data.enabled; reportSave(() => client.action('configure', {patch: {enabled: !data.enabled}}))"><span class="gx-switch__track"></span><span class="gx-switch__thumb"></span></label></div>
         </section>
         <section ref="gpsSetup" tabindex="-1" class="gx-card gx-navigation__section gx-navigation__gps" aria-labelledby="navigation-gps-heading">
           <h3 id="navigation-gps-heading">GPS Source</h3>
@@ -520,23 +523,23 @@ export const NavigationPage = {
           </details>
         </section>
         <section class="gx-card gx-navigation__section">
-          <h3>Route preferences</h3>
+          <div class="gx-section__header"><i class="bi bi-signpost-split" aria-hidden="true"></i><span class="gx-section__title">Route preferences</span></div>
           <p>Apply to new routes and automatic reroutes. Changing a preference recalculates your current route.</p>
           <div v-for="option in routeAvoidances" :key="option.key" class="gx-row">
             <span class="gx-row__info gx-row__label">{{ option.label }}</span>
             <label class="gx-switch"><input type="checkbox" role="switch" :aria-label="option.label" :checked="!!data?.[option.key]"
-              :disabled="!available" @change="client.action('configure', {patch: {[option.key]: $event.target.checked}})"><span class="gx-switch__track"></span><span class="gx-switch__thumb"></span></label>
+              :disabled="!available" @change="reportSave(() => client.action('configure', {patch: {[option.key]: $event.target.checked}}))"><span class="gx-switch__track"></span><span class="gx-switch__thumb"></span></label>
           </div>
         </section>
         <section class="gx-card gx-navigation__section">
-          <h3>Mapbox</h3>
+          <div class="gx-section__header"><i class="bi bi-map" aria-hidden="true"></i><span class="gx-section__title">Mapbox</span></div>
           <p>One public Mapbox access token (starting with pk.) handles the map, place and address search, and routes. A separate secret token is not needed.</p>
           <p>Save your token while parked. Galaxy keeps it on your comma and never displays it after saving. Permanent address results can be saved. Search suggestions are temporary and used only for the current route. Favorites and recent destinations are also kept on your comma; going to one skips search, so it uses none of your search allowance. URL-restricted keys may reject map requests.</p>
           <p class="gx-note">Typing suggestions and offline road maps stop just short of Mapbox's free monthly allowance and resume on the 1st. Permanent address lookups are billed by Mapbox. Searches, address lookups, routes and map views are counted here but not limited.</p>
           <dl v-if="usageRows.length" class="gx-navigation__usage" aria-label="Mapbox use this month">
             <template v-for="row in usageRows" :key="row.key"><dt>{{ row.label }}</dt><dd>{{ row.used.toLocaleString() }}<template v-if="row.key !== 'geocoding'"> of {{ row.limit.toLocaleString() }} free</template> this month</dd></template>
           </dl>
-          <a class="gx-navigation__token-link" href="https://account.mapbox.com/access-tokens/" target="_blank" rel="noopener noreferrer">Get a Mapbox access token</a>
+          <a class="gx-btn gx-btn--tonal gx-navigation__token-link" href="https://account.mapbox.com/access-tokens/" target="_blank" rel="noopener noreferrer">Get a Mapbox access token</a>
           <p v-if="data?.hasKey" class="gx-note">A Mapbox key is saved.</p>
           <div class="gx-field-group"><label for="navigation-token">Public Mapbox access token</label>
           <form @submit.prevent="saveKey(false)" class="gx-navigation__search">
@@ -553,9 +556,8 @@ export const NavigationPage = {
           <p v-if="mode !== 'local'" class="gx-card gx-navigation__section gx-note">Connect to your comma to set up navigation and choose a destination.</p>
           <GxNotice tone="danger" v-if="error">{{ error }}</GxNotice>
           <p v-if="stale && data" class="gx-card gx-navigation__section gx-note">Showing the last received route. Reconnecting before accepting changes.</p>
-          <GxNotice v-if="offline" tone="warn">Your comma has no network connection. You can
-            <a class="gx-navigation__link" href="#/navigation/maps" @click.prevent="selectTab('maps')">download maps for offline navigation views</a>
-            when you're back online. New routes need internet.</GxNotice>
+          <GxNotice v-if="offline" tone="warn">Your comma has no network connection. Download maps when you're back online to see them offline. New routes need internet.
+            <a class="gx-btn gx-btn--tonal" href="#/navigation/maps" @click.prevent="selectTab('maps')">Open offline maps</a></GxNotice>
           <GxNotice v-else-if="usingSavedLocation">Using your last saved location to plan routes. Route planning requires Internet; offline map downloads aren't required.
             Live guidance starts when GPS is available.</GxNotice>
           <form v-if="ready" @submit.prevent="search" class="gx-navigation__search" role="search" @focusout="onSearchFocusOut">
@@ -631,10 +633,10 @@ export const NavigationPage = {
               <button type="button" class="gx-btn gx-btn--danger" :disabled="!controlsAvailable" @click="client.action('clear')">End navigation</button>
             </div>
           </section>
-          <section v-if="data && !data.hasKey" class="gx-card gx-navigation__section"><h3>Connect Mapbox</h3><p>Add your public Mapbox key to search for places and plan a route. Your key stays on your comma.</p>
+          <section v-if="data && !data.hasKey" class="gx-card gx-navigation__section"><div class="gx-section__header"><i class="bi bi-key" aria-hidden="true"></i><span class="gx-section__title">Connect Mapbox</span></div><p>Add your public Mapbox key to search for places and plan a route. Your key stays on your comma.</p>
             <form @submit.prevent="saveKey(true)" class="gx-navigation__search"><label for="navigation-inline-token" class="gx-sr-only">Public Mapbox access token</label><input id="navigation-inline-token" class="gx-field" type="password" autocomplete="off" v-model="token" placeholder="pk.…" maxlength="2048" required :disabled="!controlsAvailable"><button type="submit" class="gx-btn" :disabled="!controlsAvailable || !token.trim()">Save and enable</button></form><button type="button" class="gx-btn gx-btn--tonal" @click="selectTab('setup')">Key details</button>
           </section>
-          <section v-else-if="data && !data.enabled" class="gx-card gx-navigation__section"><h3>Navigation is off</h3><button type="button" class="gx-btn" :disabled="!controlsAvailable" @click="client.action('configure',{patch:{enabled:true}})">Turn on navigation</button></section>
+          <section v-else-if="data && !data.enabled" class="gx-card gx-navigation__section"><div class="gx-section__header"><i class="bi bi-power" aria-hidden="true"></i><span class="gx-section__title">Navigation is off</span></div><p>Turn on the Navigation switch above to search for a destination.</p></section>
           <template v-else>
             <p v-if="busy || searchPending" role="status" class="gx-navigation__busy">{{ searchPending ? 'Searching…' : 'Working…' }}</p>
             <p v-if="searched && !busy && !error && results.length === 0" class="gx-card gx-navigation__section gx-note">No places found. Try a nearby town or a more specific address.</p>

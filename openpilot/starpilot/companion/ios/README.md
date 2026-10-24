@@ -15,4 +15,10 @@ github Actions runs the app tests, simulator build and bridge tests. bluetooth a
 
 see [Quick start](QUICK-START.md) for pairing and [Tester guide](TESTER-GUIDE.md) for connection checks.
 
-app source: `natehuby76/ios-clone`, branch `codex/secretgood-galaxy`, commit `081aa0e`. the bundled Galaxy UI keeps its upstream license in `UPSTREAM-GALAXY-LICENSE`. app store ownership and signing are separate from this repo.
+app source: `natehuby76/ios-clone`, branch `codex/secretgood-galaxy`, commit `081aa0e`. the Galaxy UI the app runs keeps its upstream license in `UPSTREAM-GALAXY-LICENSE`. app store ownership and signing are separate from this repo.
+
+## Galaxy screens
+
+The app does not bundle Galaxy's web pages. It downloads them from your comma over Wi-Fi/LAN (`GET /api/companion/web-manifest`
+lists the files and their SHA-256), verifies them and saves a copy that Bluetooth uses. Connect over Wi-Fi once before using
+Bluetooth Galaxy. Custom and unpushed branches work because nothing comes from GitHub. A comma build without that route cannot share its screens: over Wi-Fi the app then reads the pages live from comma, and Bluetooth stays unavailable until the screens have been downloaded.

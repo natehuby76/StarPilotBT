@@ -61,8 +61,8 @@ try {
   assert.ok(all(host).some(item => item.type === 'div' && item.props.class === 'install-state' && text(item).includes('true')),
     'The main install action is told to render as an update')
   const root = host.children.find(item => item.type === 'div')
-  assert.ok(root.children.indexOf(notice) < root.children.findIndex(item => item.type === 'section'), 'Notice precedes all page sections')
-  const install = all(host).find(item => item.type === 'section' && text(item).includes('Install Galaxy'))
+  assert.ok(root.children.indexOf(notice) < root.children.findIndex(item => item.type === 'ol'), 'Notice precedes the setup steps')
+  const install = all(host).find(item => item.type === 'li' && text(item).includes('Install Galaxy'))
   assert.match(text(install), /Android offline app version:.*1.1.5.*Installed.*1.1.4/s)
   const dismiss = all(notice).find(item => item.type === 'button' && item.props['aria-label'] === 'Dismiss app update notice')
   dismiss.props.onClick()
@@ -104,7 +104,7 @@ storage.clear()
 mounted = await mount()
 try {
   assert.equal(banner(mounted.host), undefined, 'A browser cannot infer an installed version without a connected phone')
-  const install = all(mounted.host).find(item => item.type === 'section' && text(item).includes('Install Galaxy'))
+  const install = all(mounted.host).find(item => item.type === 'li' && text(item).includes('Install Galaxy'))
   assert.match(text(install), /Android offline app version:.*1.1.5/s)
   assert.doesNotMatch(text(install), /Installed:/)
 } finally { mounted.app.unmount() }

@@ -22,6 +22,7 @@ from openpilot.starpilot.models.catalog import DEFAULT_SMALL, DEFAULT_SMALL_SHA2
 
 EM_AARCH64 = 183
 ELF_FILES = (
+  "openpilot/starpilot/flm/_primitive_walk.so",
   "opendbc_repo/opendbc/can/_raw_value.so",
   "openpilot/common/libparams_c.so",
   "openpilot/selfdrive/pandad/pandad",
@@ -192,6 +193,8 @@ def require_qcom_pickle(path: Path) -> None:
 
 
 def validate(root: Path) -> None:
+  from tools.laptop_device_build.validate_flm_native import validate as validate_flm_native
+  validate_flm_native(root)
   for name in ELF_FILES:
     path = root / name
     require_aarch64_elf(path.read_bytes(), name)
@@ -206,9 +209,13 @@ def validate(root: Path) -> None:
     raise ValueError(f"camera warp set differs from current camera configs: {sorted(actual_warps)}")
   for name in (*MODELS, *WARPS):
     require_qcom_pickle(model_dir / name)
-  shipped = materialize_file_chunked(model_dir / f"{DEFAULT_SMALL}_driving_tinygrad.pkl", DEFAULT_SMALL_SHA256)
-  if shipped.stat().st_size != DEFAULT_SMALL_SIZE:
-    raise ValueError("Shipped default model size differs from the published artifact")
+  from tools.laptop_device_build.qcom_artifact_contract import native_records, verify_native_defaults
+  if native_records(root) is not None:
+    verify_native_defaults(root)
+  else:
+    shipped = materialize_file_chunked(model_dir / f"{DEFAULT_SMALL}_driving_tinygrad.pkl", DEFAULT_SMALL_SHA256)
+    if shipped.stat().st_size != DEFAULT_SMALL_SIZE:
+      raise ValueError("Shipped default model size differs from the published artifact")
 
 
 def main() -> None:

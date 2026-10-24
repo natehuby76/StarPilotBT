@@ -128,6 +128,20 @@ class ProjectionPhoneWindowHttpTest(unittest.TestCase):
     self.assertEqual(self.aa.calls, [])
     self.assertEqual(self.bluetooth.calls, ['accept_pair'])
 
+  def test_accessory_scan_pair_prompt_and_cancel_are_delegated(self):
+    for operation in ('scan', 'stop_scan'):
+      self.assertEqual(self.action({'operation': operation})[0], 200)
+      self.assertNotEqual(self.http('/api/android-auto/source/' + self.aa.calls[-1]['source'])[1], {'valid': True})
+    self.assertEqual(self.action({'operation': 'pair', 'address': PHONE})[0], 200)
+    source = self.aa.calls[-1]['source']
+    self.assertEqual(self.aa.calls[-1]['address'], PHONE)
+    self.assertEqual(self.http('/api/bluetooth/status')[0], 200)
+    self.assertEqual(self.action({'operation': 'pairing_response', 'promptId': PROMPT, 'accepted': True})[0], 200)
+    self.assertEqual(self.action({'operation': 'cancel_pair'})[0], 200)
+    self.assertEqual({c['source'] for c in self.aa.calls[-4:]}, {source})
+    self.assertEqual(self.bluetooth.calls, [])
+    self.assertEqual(self.spotify.prepared, [])
+
 
 if __name__ == '__main__':
   unittest.main()

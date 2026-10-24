@@ -22,7 +22,10 @@ assert.equal(prompted, 1)
 assert.equal(state.prompt, null)
 assert.equal(state.installed, false)
 await InstallApp.methods.installWeb.call(state)
-assert.match(state.message, /Install app/)
+assert.equal(state.message, '')
+assert.match(InstallApp.template, /v-else-if="url" class="gx-btn" :href="url"/)
+window.location = { hostname: 'galaxy.firestar.link' }
+assert.equal(InstallApp.computed.onPublicGalaxy(), true)
 events.get('appinstalled')()
 assert.equal(state.installed, true)
 mode.matches = true; modeListener()
@@ -55,8 +58,8 @@ delete window.StarPilotApp
 const android = { ...InstallApp.data() }
 InstallApp.methods.installAndroid.call(android)
 assert.equal(apk, './app.apk')
-assert.match(InstallApp.template, /Install as web app/)
-assert.match(InstallApp.template, /Install as offline app \(Android\)/)
+assert.match(InstallApp.template, /Install web app/)
+assert.match(InstallApp.template, /Download Android APK/)
 assert.match(InstallApp.template, /Update offline app \(Android\)/)
 assert.match(InstallApp.template, /android && !ios/)
 location.protocol = 'https:'
@@ -65,11 +68,9 @@ assert.equal(android.help, true)
 assert.match(android.message, /Android app.*locally|locally.*Android app/i)
 
 // Choosing the web app on Android always keeps web-install guidance.
-android.help = false
-await InstallApp.methods.installWeb.call(android)
-assert.equal(android.help, true)
-assert.match(android.message, /Install app/)
-assert.doesNotMatch(android.message, /download the Android app/i)
+const webHelp = InstallApp.methods.installHelp.call(android)
+assert.match(webHelp, /Install app/)
+assert.doesNotMatch(webHelp, /download the Android app/i)
 
 // iOS never sees the Android offline install; the web app install remains.
 assert.equal(isIosDevice('iPhone'), true)
@@ -81,7 +82,6 @@ navigator.userAgent = 'iPhone'
 const ios = { ...InstallApp.data() }
 assert.equal(ios.android, false)
 assert.equal(ios.ios, true)
-await InstallApp.methods.installWeb.call(ios)
-assert.match(ios.message, /Share.*Add to Home Screen/)
-assert.equal(ios.help, true)
+assert.match(InstallApp.template, /<a v-if="ios"[^>]+href="https:\/\/apps\.apple\.com\/ca\/app\/starpilot-bt\/id6821039119"/)
+assert.match(InstallApp.methods.installHelp.call(ios), /Share.*Add to Home Screen/)
 assert.match(InstallApp.template, /v-if="android && !ios/)

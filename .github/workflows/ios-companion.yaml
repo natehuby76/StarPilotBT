@@ -24,7 +24,7 @@ concurrency:
 jobs:
   app:
     name: Swift tests and iOS Simulator build
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 25
     defaults:
       run:

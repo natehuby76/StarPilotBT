@@ -24,9 +24,10 @@ export function androidInstallHelp() {
 
 export const InstallApp = {
   name: 'InstallApp',
-  props: { updateAvailable: { type: Boolean, default: false } },
+  props: { url: { type: String, default: '' }, updateAvailable: { type: Boolean, default: false } },
   data: () => ({ prompt: null, installed: false, help: false, message: '',
     android: isAndroidDevice(), ios: isIosDevice() }),
+  computed: { onPublicGalaxy() { return window.location?.hostname === 'galaxy.firestar.link' } },
   mounted() {
     this.prompt = deferredPrompt
     this.displayMode = window.matchMedia('(display-mode: standalone)')
@@ -45,14 +46,15 @@ export const InstallApp = {
     this.prompt = null
   },
   methods: {
+    installHelp,
     async installWeb() {
-      if (!this.prompt) { this.message = installHelp(); this.help = !this.help; return }
+      if (!this.prompt) return
       const prompt = this.prompt
       this.prompt = deferredPrompt = null
       try {
         await prompt.prompt()
         await prompt.userChoice
-      } catch { this.message = installHelp(); this.help = true }
+      } catch { this.message = installHelp() }
     },
     installAndroid() {
       if (this.updateAvailable && typeof window.StarPilotApp?.installUpdate === 'function') {
@@ -63,11 +65,17 @@ export const InstallApp = {
       else { this.message = androidInstallHelp(); this.help = true }
     },
   },
-  template: `<div v-if="!installed || updateAvailable" class="gx-install-app">
-    <div class="gx-actions">
-      <button v-if="!installed" type="button" class="gx-btn gx-btn--tonal" @click="installWeb"><i class="bi bi-download" aria-hidden="true"></i><span>Install as web app</span></button>
-      <button v-if="android && !ios && (!installed || updateAvailable)" type="button" class="gx-btn" @click="installAndroid"><i class="bi bi-download" aria-hidden="true"></i><span>{{ updateAvailable ? 'Update offline app (Android)' : 'Install as offline app (Android)' }}</span></button>
-    </div>
+  template: `<div class="gx-install-app">
+    <p v-if="installed" class="gx-note" role="status">Galaxy is installed.</p>
+    <template v-else-if="onPublicGalaxy">
+      <button v-if="prompt" type="button" class="gx-btn" @click="installWeb"><i class="bi bi-download" aria-hidden="true"></i> Install web app</button>
+      <p v-else class="gx-note">{{ installHelp() }}</p>
+      <p v-if="message" class="gx-note">{{ message }}</p>
+    </template>
+    <a v-else-if="url" class="gx-btn" :href="url" target="_blank" rel="noopener"><i class="bi bi-box-arrow-up-right" aria-hidden="true"></i> Install web app</a>
+    <p v-else class="gx-note">Pair in step 1 to get your install link.</p>
+    <a v-if="ios" class="gx-btn" href="https://apps.apple.com/ca/app/starpilot-bt/id6821039119" target="_blank" rel="noopener"><i class="bi bi-apple" aria-hidden="true"></i> Download StarPilot BT on the App Store</a>
+    <button v-if="android && !ios && (!installed || updateAvailable)" type="button" class="gx-btn" @click="installAndroid"><i class="bi bi-download" aria-hidden="true"></i><span>{{ updateAvailable ? 'Update offline app (Android)' : 'Download Android APK' }}</span></button>
     <p v-if="help" class="gx-note gx-install-help">{{ message }}</p>
   </div>`,
 }
