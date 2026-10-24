@@ -25,11 +25,9 @@ class FakeMap:
 class FakeFeed:
   def __init__(self):
     self.reads = []
-    self.destinations = []
 
-  def read(self, sm, *, navigation_requested=None, destination=None):
+  def read(self, sm, *, navigation_requested=None):
     self.reads.append(sm)
-    self.destinations.append(destination)
     return "map input"
 
 
@@ -64,7 +62,6 @@ class TestProjectionMap(unittest.TestCase):
     view.prepare()
     self.assertEqual(view.map.prepared, [("map input", 640, 480)])
     self.assertEqual(view.map_feed.reads, [native.ui_state.sm])
-    self.assertEqual(view.map_feed.destinations, [None], "no favorites: the feed keeps navigation's own name")
     view._map_layer(None, None)
     self.assertEqual(view.map.drawn, [((100, 200, 640, 480), 0.45)])
     overlay = view.map

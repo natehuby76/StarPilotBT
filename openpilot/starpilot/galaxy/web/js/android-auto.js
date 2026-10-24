@@ -8,10 +8,6 @@ import { BluetoothDeviceList } from "./bluetooth-devices.js"
 import { BluetoothNotice, bluetoothConnection } from "./bluetooth-notice.js"
 import { GalaxySettingRow, switchRow } from "./galaxy-setting-row.js"
 
-export function uploadTimeout(size) {
-  return Math.max(180000, Math.ceil(size / 65536) * 1000)
-}
-
 export function uploadPackage(path, options, progress, makeRequest = () => new XMLHttpRequest()) {
   return new Promise((resolve, reject) => {
     const xhr = makeRequest()
@@ -25,7 +21,7 @@ export function uploadPackage(path, options, progress, makeRequest = () => new X
     }
     xhr.open("POST", path)
     xhr.withCredentials = true
-    xhr.timeout = options.timeout ?? 180000
+    xhr.timeout = 180000
     xhr.setRequestHeader("Content-Type", "application/octet-stream")
     xhr.upload.onprogress = (event) => {
       if (!settled && event.lengthComputable) progress({ loaded: event.loaded, total: event.total })
@@ -44,28 +40,6 @@ export function uploadPackage(path, options, progress, makeRequest = () => new X
 }
 
 const ADDRESS = /^(?:[0-9A-F]{2}:){5}[0-9A-F]{2}$/
-const HEAD_UNIT_APPS = { headunitpad: "HeadunitPad", openheadunit: "Open Headunit" }
-const HOTSPOT_LINK = `<a class="gx-link" href="#/galaxy">Galaxy Wi-Fi Hotspot</a>`
-const APP_SETUP = `
-  <div v-if="app === 'HeadunitPad'" class="gx-note" role="note">
-    <strong>HeadunitPad setup (iPad)</strong>
-    <ol>
-      <li>Install <a class="gx-link" href="https://github.com/andyching168/HeadunitPad" target="_blank" rel="noopener noreferrer">HeadunitPad from GitHub</a> on the iPad.</li>
-      <li>Put the iPad on the same Wi-Fi as the comma, or turn on the ${HOTSPOT_LINK} and join its TheGalaxy network.</li>
-      <li>In HeadunitPad, choose Headunit Server or Auto mode, landscape, at 800x480, 1280x720 or 1920x1080.</li>
-      <li>Tap Connect here, then open HeadunitPad.</li>
-    </ol>
-  </div>
-  <div v-else-if="app === 'Open Headunit'" class="gx-note" role="note">
-    <strong>Open Headunit setup (Android tablet)</strong>
-    <ol>
-      <li>Install <a class="gx-link" href="https://github.com/andreknieriem/open-headunit/releases" target="_blank" rel="noopener noreferrer">Open Headunit from GitHub</a> on the tablet.</li>
-      <li>Put the tablet on the same Wi-Fi as the comma, or turn on the ${HOTSPOT_LINK} and join its TheGalaxy network.</li>
-      <li>In Open Headunit Settings, add WiFi to Connection mode. Under Wireless Connection, set Wireless Mode to Headunit Server and Server Mode to Auto.</li>
-      <li>Set Resolution to 480p, 720p or 1080p and Video Codec to H.264 or Auto.</li>
-      <li>Tap Connect here, then tap the WiFi button in Open Headunit.</li>
-    </ol>
-  </div>`
 const PROMPT = new Set(["pin", "passkey", "confirmation", "authorization", "display_pin", "display_passkey"])
 
 export function validPromptInput(prompt, value) {
@@ -315,15 +289,13 @@ export class AndroidAutoFeed {
     }
     this.uploadProgress = { loaded: 0, total: file.size }
     const generation = this.generation + 1
-    // Slow tunnel links need longer than three minutes for large packages.
-    const timeout = uploadTimeout(file.size)
-    const transport = (path, options) => this.uploader(path, { ...options, timeout }, (progress) => {
+    const transport = (path, options) => this.uploader(path, options, (progress) => {
       if (this.active && generation === this.generation) { this.uploadProgress = progress; this.emit() }
     })
     const result = await this.request("./api/android-auto/upload", {
       method: "POST",
       headers: { "Content-Type": "application/octet-stream" }, body: file
-    }, timeout, transport)
+    }, 180000, transport)
     this.uploadProgress = null
     this.emit()
     if (result === null) return false
@@ -485,19 +457,11 @@ export const AndroidAutoPage = {
     supportReady() { return !!(this.setup?.enabled && this.setup.identity.installed) },
     // Returning drivers see a status card; the setup steps fold away below it.
     wired() { return this.runtime?.connection === "wired" },
-    app() { return HEAD_UNIT_APPS[this.runtime?.connection] || "" },
-    connectionName() { return this.app === "HeadunitPad" ? "iPad" : this.app ? "tablet" : this.wired ? "car" : this.selected?.name || "car" },
-    setupDone() { return !!(this.supportReady && (this.selected || this.wired || this.app) && !this.pairing?.active) },
+    connectionName() { return this.wired ? "car" : this.selected?.name || "car" },
+    setupDone() { return !!(this.supportReady && (this.selected || this.wired) && !this.pairing?.active) },
     wiredRow() {
       const detail = "Project over a USB cable from the car to the comma’s USB-C port instead of Bluetooth and Wi-Fi."
       return switchRow("Wired USB Connection", this.wired, detail + (this.runtime?.wired_blocked ? ` ${this.runtime.wired_blocked}.` : ""))
-    },
-    appRow() {
-      return { label: "App", value: this.app || "Off", choices: ["Off", ...Object.values(HEAD_UNIT_APPS)], available: true, action: true,
-        reason: "Project to a tablet app on the same Wi-Fi as the comma or the Galaxy Wi-Fi Hotspot instead of the car." }
-    },
-    appDisabled() {
-      return !this.setup?.enabled || !this.setup.parked || !!this.pairing?.active || !!this.runtime?.running
     },
     wiredDisabled() {
       return !this.setup?.enabled || !this.setup.parked || !!this.pairing?.active || !!this.runtime?.running ||
@@ -563,7 +527,7 @@ export const AndroidAutoPage = {
       return ""
     },
     connectReason() {
-      if (!this.selected && !this.wired && !this.app) return "Pair your car in step 2 first."
+      if (!this.selected && this.runtime?.connection !== "wired") return "Pair your car in step 2 first."
       if (!this.setup?.enabled) return "Turn on Android Auto Support in step 1."
       if (!this.setup.serviceReady) return "Waiting for the Android Auto service to start."
       if (this.pairing?.active) return "Finish or cancel pairing first."
@@ -580,10 +544,6 @@ export const AndroidAutoPage = {
   },
   methods: {
     switchRow,
-    saveApp(index, value) {
-      const connection = Object.keys(HEAD_UNIT_APPS).find(key => HEAD_UNIT_APPS[key] === value) || "wireless"
-      return this.control("connection", { connection })
-    },
     async begin() {
       await this.feed.start()
       if (this.setup?.enabled && this.setup.serviceReady && !this.pairing?.active) this.loadReceivers()
@@ -692,7 +652,7 @@ export const AndroidAutoPage = {
         <h2>Android Auto</h2>
         <p>Show the StarPilot driving view on your car’s screen. Set up support, {{ wired ? 'plug in your car' : 'pair your car' }}, then connect.</p>
       </header>
-      <GxNotice tone="warn" v-if="!wired && !app">Android Auto uses the comma’s Wi-Fi to project to your car and disconnects it from your current Wi-Fi network. Use the Galaxy hotspot for local access during projection. Remote Galaxy access requires Internet on the comma.</GxNotice>
+      <GxNotice tone="warn" v-if="!wired">Android Auto uses the comma’s Wi-Fi to project to your car and disconnects it from your current Wi-Fi network. Use the Galaxy hotspot for local access during projection. Remote Galaxy access requires Internet on the comma.</GxNotice>
       <GxNotice tone="danger" v-if="error && setup">{{ error }}</GxNotice>
       <GxNotice v-if="!setup" :busy="!error" :tone="error ? 'danger' : 'info'">{{ error || "Checking Android Auto setup… Reconnecting automatically…" }}</GxNotice>
       <section v-if="setup && setupDone" class="gx-card gx-aa-step gx-aa-home" aria-labelledby="gx-aa-home-title">
@@ -710,8 +670,6 @@ export const AndroidAutoPage = {
             :save-value="(index, value) => control('auto_connect', { enabled: value === 'On' })" />
           <GalaxySettingRow :row="wiredRow" :index="0" :busy="busy" :disabled="wiredDisabled"
             :save-value="(index, value) => control('connection', { connection: value === 'On' ? 'wired' : 'wireless' })" />
-          <GalaxySettingRow :row="appRow" :index="0" :busy="busy" :disabled="appDisabled" :save-value="saveApp" />
-          ${APP_SETUP}
           <div class="gx-actions">
             <a class="gx-btn gx-btn--tonal" href="#/theme_maker/android_auto"><i class="bi bi-layout-text-window" aria-hidden="true"></i> Customize Layout</a>
             <button type="button" class="gx-btn gx-btn--tonal" :aria-expanded="showSteps" aria-controls="gx-aa-steps" @click="showSteps = !showSteps">
@@ -841,12 +799,10 @@ export const AndroidAutoPage = {
               :save-value="(index, value) => control('auto_connect', { enabled: value === 'On' })" />
             <GalaxySettingRow :row="wiredRow" :index="0" :busy="busy" :disabled="wiredDisabled"
               :save-value="(index, value) => control('connection', { connection: value === 'On' ? 'wired' : 'wireless' })" />
-            <GalaxySettingRow :row="appRow" :index="0" :busy="busy" :disabled="appDisabled" :save-value="saveApp" />
-            ${APP_SETUP}
             <p v-if="runtime?.companion_name" class="gx-note">Car: {{ runtime.companion_name }}</p>
             <details class="gx-aa-wiki"><summary>Stuck connecting? Wi-Fi and screen troubleshooting</summary>
               <ul>
-                <li v-if="!wired && !app"><strong>How it connects:</strong> after Bluetooth, the car (or adapter) creates its own hidden 5 GHz Wi-Fi network and tells the comma how to join. The picture streams over that Wi-Fi.</li>
+                <li v-if="!wired"><strong>How it connects:</strong> after Bluetooth, the car (or adapter) creates its own hidden 5 GHz Wi-Fi network and tells the comma how to join. The picture streams over that Wi-Fi.</li>
                 <li><strong>First connection:</strong> stay in Park or offroad mode, and keep the car’s screen on.</li>
                 <li><strong>Black or frozen screen:</strong> tap Disconnect, wait a few seconds, then connect again. If it keeps happening, turn the car off and on.</li>
                 <li><strong>Car says the phone isn’t compatible:</strong> make sure wireless Android Auto (sometimes called “smartphone connection”) is turned on in the car’s settings, and that step 1 shows Ready.</li>

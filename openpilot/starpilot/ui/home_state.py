@@ -78,7 +78,6 @@ class HomeState:
   gpu_state: str = "disconnected"
   metric: bool = False
   temperature_high: bool = False
-  jetlink: str = "off"  # off, plugged (host on the cable), connected (host on the link)
 
 
 @dataclass(frozen=True)

@@ -100,8 +100,6 @@ def handle(supervisor: Supervisor, request: dict[str, Any], verifier: GalaxySour
     supervisor.user_stop()
   elif command == "set_auto_connect":
     supervisor.set_auto_connect(bool(request.get("enabled", True)))
-  elif command == "set_dedicated_wifi":
-    supervisor.set_dedicated_wifi(request.get("enabled") is True)
   elif command == "select_receiver":
     supervisor.select_receiver(str(request.get("address", "")), str(request.get("name", "")))
   elif command == "forget_receiver":
@@ -232,8 +230,6 @@ def main() -> int:
             pass
 
     threading.Thread(target=housekeeping, daemon=True).start()
-    from openpilot.starpilot.system.android_auto.bugsink_report import Reporter
-    cleanup.callback(Reporter(parked=lambda: _offroad() and not supervisor.status()["running"]).start().close)
     server = Server(ANDROID_AUTO_SOCKET_PATH, supervisor, source_verifier, authority.configuration_allowed)
     cleanup.callback(server.server_close)
 

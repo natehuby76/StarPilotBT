@@ -61,7 +61,7 @@ export const GalaxyHotspot = {
       if (!this.active || this.busy || !this.snapshot?.editable || !this.passwordValid) return
       clearTimeout(this.timer); this.controller?.abort()
       const generation = ++this.generation
-      this.controller = new AbortController(); this.busy = true; this.error = ''; this.saveError = ''; this.notice = ''
+      this.controller = new AbortController(); this.busy = true; this.saveError = ''; this.notice = ''
       try {
         const value = await requestJson('./api/galaxy/hotspot', { request: { signal: this.controller.signal,
           method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -73,7 +73,6 @@ export const GalaxyHotspot = {
       } catch (error) {
         if (!this.active || generation !== this.generation) return
         if (error.status === 401) { this.stop(); this.unauthorized(); return }
-        // Kept until the next edit or save; the follow-up poll must not erase it.
         this.saveError = `${error.message} If Wi-Fi disconnected, reconnect and reload to check whether settings saved.`
       } finally {
         if (this.active && generation === this.generation) { this.busy = false; this.timer = setTimeout(() => this.refresh(), 1000) }
@@ -91,9 +90,9 @@ export const GalaxyHotspot = {
       <div class="gx-stack">
         <p>Network name: <strong>{{ snapshot.config.ssid }}</strong></p>
         <p class="gx-note">Fixed to TheGalaxy- plus the last four characters of your comma dongle ID. Once saved, the switch and password survive restarts.</p>
-        <label class="gx-field-group">Password <input class="gx-field" :type="showPassword ? 'text' : 'password'" v-model="draft.password" :disabled="busy || !snapshot.editable" maxlength="63" autocomplete="new-password" placeholder="Blank generates a password" @input="saveError = ''" /></label>
-        <small class="gx-note" :class="{ 'gx-note--danger': !passwordValid }">12–63 characters with no spaces, using standard keyboard characters only. Leave it blank to have the comma make one.</small>
+        <label class="gx-field-group">Password <input class="gx-field" :type="showPassword ? 'text' : 'password'" v-model="draft.password" :disabled="busy || !snapshot.editable" maxlength="63" autocomplete="new-password" placeholder="Blank generates a password" /></label>
         <label><input type="checkbox" v-model="showPassword" :disabled="busy || !snapshot.editable" /> Show password</label>
+        <p v-if="!passwordValid" class="gx-note">Use a 12–63 character password without spaces, or leave it blank to generate one.</p>
         <div class="gx-settings__controls gx-actions"><button class="gx-btn" type="button" :disabled="!dirty || busy || !snapshot.editable || !passwordValid" @click="save">{{ busy ? 'Saving…' : 'Save hotspot' }}</button></div>
       </div>
       <GxNotice v-if="!snapshot.editable">Park before changing hotspot settings.</GxNotice>
@@ -106,6 +105,6 @@ export const GalaxyHotspot = {
       <li><i class="bi bi-arrow-repeat" aria-hidden="true"></i><span>Network or channel changes may interrupt access. Changing the password or disabling the hotspot disconnects phones.</span></li>
       <li><i class="bi bi-globe" aria-hidden="true"></i><span>The public galaxy.firestar.link address still needs Internet and its tunnel.</span></li>
     </ul>
-    <GxNotice v-if="error || saveError" tone="danger">{{ saveError || error }}</GxNotice><GxNotice v-if="notice" tone="success">{{ notice }}</GxNotice>
+    <GxNotice v-if="error" tone="danger">{{ error }}</GxNotice><GxNotice v-if="saveError" tone="danger">{{ saveError }}</GxNotice><GxNotice v-if="notice" tone="success">{{ notice }}</GxNotice>
   </section>`,
 }

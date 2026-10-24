@@ -480,9 +480,9 @@ export const NavigationPage = {
       <template v-else-if="tab === 'setup'">
         <p v-if="mode !== 'local'" class="gx-note">Connect to your comma to set up navigation and choose a destination.</p>
         <GxNotice tone="danger" v-if="error">{{ error }}</GxNotice>
-        <section class="gx-card gx-navigation__section gx-navigation__enable">
-          <div><h3>Navigation</h3>
-          <p>Show directions on your comma. Navigation works with every driving model. Route guidance helps prepare for turns; steering and speed control follow your normal engagement settings.</p></div>
+        <section class="gx-card gx-navigation__section">
+          <h3>Navigation</h3>
+          <p>Show directions on your comma. Navigation works with every driving model. Route guidance helps prepare for turns; steering and speed control follow your normal engagement settings.</p>
           <button v-if="data" type="button" class="gx-btn" :class="{'gx-btn--tonal':data.enabled}" :disabled="!controlsAvailable"
             @click="client.action('configure',{patch:{enabled:!data.enabled}})">{{ data.enabled ? 'Turn off navigation' : 'Turn on navigation' }}</button>
         </section>
