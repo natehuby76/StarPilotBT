@@ -345,6 +345,8 @@ def source_deadline_supported(CP) -> bool:
   """Reuse only exact static eligibility; live source/native leases stay current."""
   from openpilot.starpilot.aol.vehicle import _car_params_bytes
 
+  if CP.brand != 'hyundai':
+    return False
   key = _car_params_bytes(CP)
   if key is not None:
     try:

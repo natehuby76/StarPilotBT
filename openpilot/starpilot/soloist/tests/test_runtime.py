@@ -334,19 +334,32 @@ def test_control_socket_round_trip(layout, tmp_path):
   stop = threading.Event()
   thread = threading.Thread(target=supervisor.serve, args=(sup, path, stop), daemon=True)
   thread.start()
-  for _ in range(50):
-    if Path(path).exists():
-      break
+  try:
     import time
-    time.sleep(0.02)
-  result = SpotifyClient(path).call('status')
-  assert result['status']['state'] == 'starting'
-  with pytest.raises(RuntimeError):
-    SpotifyClient(path).call('control', action='pause', args={})
-  stop.set()
-  thread.join(timeout=2)
-  Path(path).unlink(missing_ok=True)
-  os.rmdir(folder)
+    client = SpotifyClient(path)
+    result = None
+    for attempt in range(50):
+      if not Path(path).exists():
+        time.sleep(0.02)
+        continue
+      try:
+        result = client.call('status')
+        break
+      except (FileNotFoundError, ConnectionRefusedError):
+        if attempt == 49:
+          raise
+        time.sleep(0.02)
+    assert result is not None
+    assert result['status']['state'] == 'starting'
+    with pytest.raises(RuntimeError):
+      client.call('control', action='pause', args={})
+  finally:
+    stop.set()
+    thread.join(timeout=2)
+    Path(path).unlink(missing_ok=True)
+    os.rmdir(folder)
+  assert not thread.is_alive()
+
 
 
 def test_reap_orphans_only_targets_feature_binaries(layout, tmp_path, monkeypatch):

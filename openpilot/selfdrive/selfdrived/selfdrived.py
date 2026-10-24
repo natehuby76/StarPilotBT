@@ -1762,8 +1762,9 @@ class SelfdriveD:
     # Ioniq6 also checks the physical brake before its separately published host sample.
     # Retain only its already granted LAT; all proof, health and LONG withdrawal gates remain.
     # The exact vehicle policies and all proof/health checks above remain required.
+    from openpilot.starpilot.car.ford.aol import early_native_long_withdrawal_supported as ford_early_long
     return bool(gm_native_accepts_cp(self.CP, native.safetyModel, native.safetyParam) or
-                early_native_long_withdrawal_supported(self.CP) or
+                early_native_long_withdrawal_supported(self.CP) or ford_early_long(self.CP) or
                 toyota_aol_qualified(self.CP, marked_only=True) or
                 not native.pandaInventory[owners[0]].controlsAllowed and
                 not self.sm['pandaStates'][owners[0]].controlsAllowed)

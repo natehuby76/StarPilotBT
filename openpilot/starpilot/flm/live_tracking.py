@@ -213,6 +213,12 @@ def _discovery_support(rows, kind, model_rmse):
   # Maneuver geometry and miss severity are separate. A modest tracking miss
   # in a substantial curve needs the longer small-error evidence path, rather
   # than being excluded by the large-error floor forever.
+  if model_rmse is None:
+    # Native visibility selects a bounded experiment, not permission to keep it.
+    # One complete original window is enough to try a slow single-coordinate
+    # step; three NEW uncensored baseline windows and later feedback still
+    # decide its outcome. Quantized/missing probes never become sensitivity.
+    return (tuple(rows[-1:]), 1) if rows else ((), None)
   large = tuple(rows[-3:])
   if kind == 'large' and len(large) == 3 and all(row.error_rms >= (0.10 if model_rmse is None else max(0.10, 6 * model_rmse)) for row in large):
     return large, 3
@@ -266,20 +272,17 @@ def _input_shape_descriptor(shape):
 
 def _matches_demand(left: DemandSignature, right: TrackingEpisode) -> bool:
   if left.normalization_accel is not None and right.normalization_accel is not None:
-    # Fixed input windows need not replay an identical waveform phase. Match
-    # steering demand magnitude, direction/mean and rate content instead. No
-    # measured error, native result or future score chooses these descriptors.
-    left_mean, left_rate = _input_shape_descriptor(left.goal_shape)
-    right_mean, right_rate = _input_shape_descriptor(right.goal_shape)
+    # Source tracking compares normalized error across the same road regime.
+    # Requiring an almost identical tiny steering waveform prevented three
+    # fresh highway windows from ever completing a bounded experiment.
+    # Direction, speed, window duration and all source/native/profile guards
+    # still apply; model-based trials retain the stricter matching below.
     return (
       left.kind == right.kind
       and (left.kind != 'large' or left.direction == right.direction)
       and max(left.duration_ns, right.end_ns - right.start_ns) <= 1.15 * min(left.duration_ns, right.end_ns - right.start_ns)
       and max(left.speed_high, right.speed_high) <= 1.15 * min(left.speed_low, right.speed_low)
       and min(_score_scale(left), _score_scale(right)) > 0
-      and max(_score_scale(left), _score_scale(right)) <= 1.25 * min(_score_scale(left), _score_scale(right))
-      and abs(left_mean - right_mean) <= 0.25
-      and max(0.15, left_rate, right_rate) <= 1.5 * max(0.15, min(left_rate, right_rate))
     )
   return (
     left.kind == right.kind
@@ -497,8 +500,10 @@ class LiveTrackingOptimizer:
     )
     if not transient:
       self.paused_intent = None
-    elif (reason in ('acknowledged_trial_profile_withdrawn', 'expired_response_witness') and self.offer_state is not None
+    elif ((reason in ('acknowledged_trial_profile_withdrawn', 'expired_response_witness') or self.rmse is None and transient) and self.offer_state is not None
         and self.offer_state['phase'] == 'trial' and not self.offer_state.get('accepted', False) and self.before):
+      # Source-only transient gaps retain completed numerical study rows,
+      # never a command lease. Resume still requires a fresh baseline ACK.
       # Profile withdrawal requires a qualified newer source control. Expiry
       # requires an otherwise valid original owned physical witness. Neither
       # restores its command lease; both retain only the numerical study.
@@ -587,9 +592,9 @@ class LiveTrackingOptimizer:
   def _comparison_allocation(
     self, episode: TrackingEpisode, expected: float, target: dict[str, float], *, minimum_episodes: int | None = None
   ) -> tuple[int, int] | None:
-    if minimum_episodes is not None and minimum_episodes not in (3, 9):
+    if minimum_episodes is not None and minimum_episodes not in ((1, 3, 9) if self.rmse is None else (3, 9)):
       return None
-    minimum = max(_required(episode.kind), minimum_episodes or 0)
+    minimum = max(3 if self.rmse is None else _required(episode.kind), minimum_episodes or 0)
     if type(expected) not in (int, float) or not math.isfinite(expected) or expected <= 0.0001:
       return None
     # Freeze the NEW baseline size before observing any of its scores. More
@@ -637,8 +642,12 @@ class LiveTrackingOptimizer:
     hint = self._current_selector(now_ns)
     if hint is None:
       return False
-    if episode.start_ns <= self.selector_after_ns or not _matches_demand(hint['demand'], episode):
-      return True
+    if episode.start_ns <= self.selector_after_ns:
+      return self.rmse is not None
+    if not _matches_demand(hint['demand'], episode):
+      # A source recovery hint is a preference, not a collection lock. A
+      # different original maneuver can seed a new independent experiment.
+      return self.rmse is not None
     from openpilot.starpilot.flm.live_tracking_response import validate_response_witness
 
     try:
@@ -652,11 +661,11 @@ class LiveTrackingOptimizer:
     expected = self._fresh_selected_effect((episode,), hint['name'], target)
     if expected is None or expected <= 0.0001:
       self.status, self.reason = 'collecting', 'fresh_selected_native_probe_required'
-      return True
+      return self.rmse is not None
     allocation = self._comparison_allocation(episode, expected, target, minimum_episodes=hint.get('minimum_episodes'))
     if allocation is None:
       self.status, self.reason = 'collecting', 'fresh_recovery_allocation_power_insufficient'
-      return True
+      return self.rmse is not None
     # This fresh source/probe observation is REVALIDATION, never a score row.
     # Old selection provenance/expiry is preserved, not retagged as new proof.
     # The actual baseline later gets ONE unchanged power check; its honest
@@ -721,6 +730,15 @@ class LiveTrackingOptimizer:
       self._current_selector(now_ns)
       if self.selector_pending and self._revalidate_selector(episode, now_ns):
         return False
+      if self.discovery is not None and self.rmse is None:
+        # A fixed-input source comparison cannot monopolize learning after
+        # that maneuver ends. Three unmatched whole windows release it by
+        # source time alone, without inspecting any tracking outcomes. No
+        # incomplete comparison can confirm or persist a target.
+        last_match = self.comparison[-1].end_ns if self.comparison else self.discovery['selected_end_ns']
+        if (not _matches(self.discovery['anchor'], episode)
+            and episode.end_ns - last_match >= 3 * (episode.end_ns - episode.start_ns)):
+          self._discard_selector()
       if self.discovery is not None:
         discovery = self.discovery
         if now_ns > discovery['expires_ns']:
@@ -768,10 +786,14 @@ class LiveTrackingOptimizer:
     if (
       episode.start_ns <= self.settled_ns + self.lag_ns
       or episode.profile_sha256 != self._hash(state['target'])
-      or not _matches_demand(state.get('demand', _demand(self.before[0])), episode)
       or self.future
       and episode.start_ns <= self.future[-1].end_ns
     ):
+      return False
+    if not _matches_demand(state.get('demand', _demand(self.before[0])), episode):
+      last_match = self.future[-1].end_ns if self.future else self.settled_ns + self.lag_ns
+      if self.rmse is None and episode.end_ns - last_match >= 3 * (episode.end_ns - episode.start_ns):
+        self._rollback('trial_input_regime_ended')
       return False
     baseline_error = statistics.mean(_score(row) for row in self.before)
     baseline_reversals = statistics.mean(row.reversal_hz for row in self.before)
@@ -855,9 +877,9 @@ class LiveTrackingOptimizer:
   def _trial_plan(
     self, rows: tuple[TrackingEpisode, ...], expected: float, target: dict[str, float], *, minimum_episodes: int | None = None
   ) -> TrialPlan | None:
-    if minimum_episodes is not None and minimum_episodes not in (3, 9):
+    if minimum_episodes is not None and minimum_episodes not in ((1, 3, 9) if self.rmse is None else (3, 9)):
       return None
-    minimum = max(_required(rows[0].kind), minimum_episodes or 0)
+    minimum = max(3 if self.rmse is None else _required(rows[0].kind), minimum_episodes or 0)
     if type(expected) not in (int, float) or not math.isfinite(expected) or expected <= 0.0001:
       return None
     if self.rmse is None:

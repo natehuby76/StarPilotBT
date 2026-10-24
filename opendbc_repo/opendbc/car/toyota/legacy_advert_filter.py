@@ -47,6 +47,8 @@ def apply(cp):
 
 
 def configured(cp):
+  from opendbc.car.toyota.pedal_composite import parent_cp
+  cp = parent_cp(cp)
   if cp is not None and cp.carFingerprint == CAR.TOYOTA_MATRIX_RETROFIT:
     from opendbc.car.toyota import matrix_filter
     return matrix_filter.configured(cp, length=4)
@@ -70,6 +72,9 @@ def enabled(cp):
 
 
 def prepare_stock(cp):
+  from opendbc.car.toyota import pedal_composite
+  if pedal_composite.marked(cp):
+    return pedal_composite.prepare_stock(cp)
   if not configured(cp):
     return False
   cp.openpilotLongitudinalControl = False

@@ -32,6 +32,8 @@ def hardware_supported(candidate, fingerprint, car_fw):
 
 
 def configured(cp):
+  from opendbc.car.toyota.pedal_composite import parent_cp
+  cp = parent_cp(cp)
   if (cp is None or cp.brand != 'toyota' or cp.carFingerprint not in CARS or cp.notCar or cp.passive or cp.dashcamOnly or
       cp.secOcRequired or not cp.pcmCruise or cp.steerControlType != structs.CarParams.SteerControlType.torque or
       len(cp.safetyConfigs) != 1 or cp.alphaLongitudinalAvailable or cp.autoResumeSng):

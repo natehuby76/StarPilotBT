@@ -24,6 +24,8 @@ from tools.ci import lifecycle_shards, vehicle_pytest
 # Representative production callers plus their source/native refusal cases.
 # The emitted selected_test_ids record exact parametrized configurations.
 AOL_LIFECYCLE_TARGETS = (
+  'openpilot/starpilot/tests/test_ford_bluepilot_aol.py',
+  'opendbc_repo/opendbc/safety/tests/test_ford_bluepilot_aol.py',
   'openpilot/starpilot/aol/tests/test_hkg_early_long_withdrawal.py',
   'openpilot/starpilot/car/toyota/tests/test_prius_retrofit_stock.py',
   'openpilot/starpilot/car/toyota/tests/test_prius_retrofit_stock_callers.py',
@@ -40,6 +42,12 @@ AOL_LIFECYCLE_TARGETS = (
   'openpilot/starpilot/car/toyota/tests/test_rav4h_pedal_composite_callers.py',
   'opendbc_repo/opendbc/safety/tests/test_toyota_rav4h_pedal_composite.py',
   'opendbc_repo/opendbc/safety/tests/test_toyota_rav4h_pedal_order.py',
+  'openpilot/starpilot/car/toyota/tests/test_dsu_bypass.py',
+  'openpilot/starpilot/car/toyota/tests/test_dsu_bypass_callers.py',
+  'opendbc_repo/opendbc/safety/tests/test_toyota_dsu_bypass.py',
+  'openpilot/starpilot/car/toyota/tests/test_pedal_parent_configurations.py',
+  'openpilot/starpilot/car/toyota/tests/test_pedal_parent_callers.py',
+  'opendbc_repo/opendbc/safety/tests/test_toyota_pedal_parent.py',
   'opendbc_repo/opendbc/safety/tests/test_toyota_radar_lta_pedal.py',
   'opendbc_repo/opendbc/safety/tests/test_toyota_prius_retrofit_advert.py',
   'openpilot/starpilot/aol/tests/test_crossmake_native_admission.py',
@@ -227,6 +235,8 @@ DEBUG_SAFETY_CLASS_TARGETS = {
 
 
 RELEASE_TARGETS = (
+  'openpilot/starpilot/tests/test_ford_bluepilot_aol.py',
+  'opendbc_repo/opendbc/safety/tests/test_ford_bluepilot_aol.py',
   'openpilot/starpilot/car/toyota/tests/test_prius_retrofit_stock.py',
   'openpilot/starpilot/car/toyota/tests/test_prius_retrofit_stock_callers.py',
   'opendbc_repo/opendbc/car/toyota/tests/test_matrix_filter.py',
@@ -242,6 +252,12 @@ RELEASE_TARGETS = (
   'openpilot/starpilot/car/toyota/tests/test_rav4h_pedal_composite_callers.py',
   'opendbc_repo/opendbc/safety/tests/test_toyota_rav4h_pedal_composite.py',
   'opendbc_repo/opendbc/safety/tests/test_toyota_rav4h_pedal_order.py',
+  'openpilot/starpilot/car/toyota/tests/test_dsu_bypass.py',
+  'openpilot/starpilot/car/toyota/tests/test_dsu_bypass_callers.py',
+  'opendbc_repo/opendbc/safety/tests/test_toyota_dsu_bypass.py',
+  'openpilot/starpilot/car/toyota/tests/test_pedal_parent_configurations.py',
+  'openpilot/starpilot/car/toyota/tests/test_pedal_parent_callers.py',
+  'opendbc_repo/opendbc/safety/tests/test_toyota_pedal_parent.py',
   'opendbc_repo/opendbc/safety/tests/test_toyota_radar_lta_pedal.py',
   'opendbc_repo/opendbc/safety/tests/test_toyota_prius_retrofit_advert.py',
   'opendbc_repo/opendbc/car/hyundai/tests/test_long_cp_copy.py',
@@ -470,6 +486,7 @@ RELEASE_TARGETS = (
   "opendbc_repo/opendbc/car/gm/tests/test_volt_camera_removed.py",
   "opendbc_repo/opendbc/safety/tests/test_gm_volt_sdgm.py",
   "opendbc_repo/opendbc/car/gm/tests/test_volt_sdgm_control.py",
+  "opendbc_repo/opendbc/car/gm/tests/test_sdgm_brake_reacquire.py",
   "opendbc_repo/opendbc/car/gm/tests/test_volt_camera_control.py",
   "opendbc_repo/opendbc/safety/tests/test_hyundai_mrr35_angle_four.py",
   "opendbc_repo/opendbc/safety/tests/test_kia_ev6_2025_angle.py",
@@ -699,7 +716,7 @@ def build_aol_protocol(output):
 
 
 def run(suite, output, collect_only=False, shard_index=None, shard_count=4):
-  if shard_index is not None and (suite != "aol-lifecycle" or not 0 <= shard_index < shard_count):
+  if shard_index is not None and (suite not in ("aol-lifecycle", "safety-release") or not 0 <= shard_index < shard_count):
     raise ValueError("Lifecycle shard index is outside its catalog")
   output = Path(output).resolve()
   output.mkdir(parents=True, exist_ok=True)
@@ -714,7 +731,7 @@ def run(suite, output, collect_only=False, shard_index=None, shard_count=4):
                         "independent lateral/longitudinal feature transitions", "device firmware execution"],
           "targets": [], "selected_test_ids": [], "collection_errors": [],
           "fuzz_seed": os.environ.get("FUZZ_SEED"), "max_examples_override": os.environ.get("MAX_EXAMPLES")}
-  if suite == "aol-lifecycle":
+  if suite in ("aol-lifecycle", "safety-release"):
     plan["scope"] = "selected actual vehicle callers with synthetic receive/readiness timelines; native hooks where exercised by the selected suites"
     plan["lifecycle_rows"] = AOL_LIFECYCLE_SCOPE
     plan["uncovered"] = ["complete recorded routes and real-time device deadlines", "physical firmware/harness acceptance",
@@ -726,7 +743,7 @@ def run(suite, output, collect_only=False, shard_index=None, shard_count=4):
   try:
     plan["targets"] = targets_for(suite)
     plan["source"] = source_provenance()
-    if suite == "aol-lifecycle":
+    if suite in ("aol-lifecycle", "safety-release"):
       plan["source"]["build_identity"] = lifecycle_shards.build_identity(ROOT)
     plan.update(vehicle_inventory())
     plan["native"] = native_provenance()
@@ -734,9 +751,9 @@ def run(suite, output, collect_only=False, shard_index=None, shard_count=4):
       plan["native"]["safety"] = build_safety_library(suite == "safety-release", output)
     if suite == "aol-lifecycle" and not collect_only:
       plan["native"]["aol_protocol"] = build_aol_protocol(output)
-    if suite == "aol-lifecycle":
+    if suite in ("aol-lifecycle", "safety-release"):
       build_input_digest = hashlib.sha256(json.dumps(plan["source"]["build_identity"]["inputs"], sort_keys=True).encode()).hexdigest()
-      for name in ('safety', 'aol_protocol'):
+      for name in (('safety',) if suite == 'safety-release' else ('safety', 'aol_protocol')):
         if name in plan["native"]:
           plan["native"][name]["build_inputs_sha256"] = build_input_digest
     phase = "collection"
@@ -748,13 +765,15 @@ def run(suite, output, collect_only=False, shard_index=None, shard_count=4):
     ids = [test.id() for test in tests] + [vehicle_pytest.test_id(nodeid) for nodeid in pytest_nodeids]
     if shard_index is not None and not errors:
       full_targets = list(plan["targets"])
-      shards = lifecycle_shards.partition(full_targets, ids, shard_count)
+      partitioner = lifecycle_shards.release_partition if suite == 'safety-release' else lifecycle_shards.partition
+      matcher = lifecycle_shards.release_matches if suite == 'safety-release' else lifecycle_shards.matches
+      shards = partitioner(full_targets, ids, shard_count)
       plan.update(full_catalog_targets=full_targets, full_catalog_test_ids=list(ids),
                   shard={"index": shard_index, "count": shard_count})
       assigned_targets = shards[shard_index]
       plan["targets"] = assigned_targets
       def assigned(identity):
-        return any(lifecycle_shards.matches(identity, target) for target in assigned_targets)
+        return any(matcher(identity, target) for target in assigned_targets)
       tests = [test for test in tests if assigned(test.id())]
       pytest_nodeids = [nodeid for nodeid in pytest_nodeids if assigned(vehicle_pytest.test_id(nodeid))]
       ids = [test.id() for test in tests] + [vehicle_pytest.test_id(nodeid) for nodeid in pytest_nodeids]
@@ -780,7 +799,7 @@ def run(suite, output, collect_only=False, shard_index=None, shard_count=4):
       errors.extend(pytest_errors)
       phase = "source verification"
       plan["source_after"] = source_provenance()
-      if suite == "aol-lifecycle":
+      if suite in ("aol-lifecycle", "safety-release"):
         plan["source_after"]["build_identity"] = lifecycle_shards.build_identity(ROOT)
         if plan["source"]["build_identity"] != plan["source_after"]["build_identity"]:
           gate_errors.append("Lifecycle source/build identity changed during the suite")
@@ -793,11 +812,12 @@ def run(suite, output, collect_only=False, shard_index=None, shard_count=4):
   records = test_runner.account_for_tests(ids, records, tests)
   if not errors and suite == "interfaces":
     gate_errors.extend(interface_execution_errors(platform_tests, records))
-  if not collect_only and suite == "aol-lifecycle":
+  if not collect_only and suite in ("aol-lifecycle", "safety-release"):
     gate_errors.extend(f"Required lifecycle case did not pass: {record['id']} ({record['status']})"
-                       for record in records if record["status"] != "passed")
+                       for record in records
+                       if not (lifecycle_shards.release_result_allowed(record) if suite == "safety-release" else record["status"] == "passed"))
     for target in plan["targets"]:
-      if not any(lifecycle_shards.matches(identity, target) for identity in ids):
+      if not any((lifecycle_shards.release_matches if suite == 'safety-release' else lifecycle_shards.matches)(identity, target) for identity in ids):
         gate_errors.append(f"Required lifecycle module collected no cases: {target}")
   elapsed = time.monotonic() - started
   exit_code = test_runner.report(records, errors + gate_errors, 10, elapsed)

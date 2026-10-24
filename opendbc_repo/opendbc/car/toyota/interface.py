@@ -12,15 +12,17 @@ SteerControlType = structs.CarParams.SteerControlType
 
 
 def toyota_auto_hold_supported(CP) -> bool:
-  from opendbc.car.toyota.rav4h_filter import enabled as rav4h_filter_enabled
-  if CP.carFingerprint == CAR.TOYOTA_RAV4H and rav4h_filter_enabled(CP):
-    return True
-  return bool(CP.brand == "toyota" and CP.carFingerprint in TOYOTA_AUTO_HOLD_CARS and
-              CP.openpilotLongitudinalControl and not CP.flags & ToyotaFlags.SECOC and
-              not CP.notCar and not CP.dashcamOnly and not CP.passive and len(CP.safetyConfigs) == 1 and
-              CP.safetyConfigs[0].safetyModel == structs.CarParams.SafetyModel.toyota and
-              (CP.safetyConfigs[0].safetyParam & 0xFF) == EPS_SCALE[CP.carFingerprint] and
-              not CP.safetyConfigs[0].safetyParam & ~(0xFF | int(ToyotaSafetyFlags.ALT_BRAKE) | int(ToyotaSafetyFlags.LTA)))
+  from opendbc.car.toyota import pedal, pedal_composite
+  if not (CP.brand == "toyota" and CP.carFingerprint in TOYOTA_AUTO_HOLD_CARS and
+          CP.openpilotLongitudinalControl and not CP.flags & ToyotaFlags.SECOC and
+          not CP.notCar and not CP.dashcamOnly and not CP.passive and len(CP.safetyConfigs) == 1 and
+          CP.safetyConfigs[0].safetyModel == structs.CarParams.SafetyModel.toyota):
+    return False
+  parent = pedal_composite.parent_cp(CP)
+  return (any(module.configured(parent) for module in pedal_composite.parent_modules()) or
+          pedal.configured(CP) or
+          ((parent.safetyConfigs[0].safetyParam & 0xFF) == EPS_SCALE[parent.carFingerprint] and
+           not parent.safetyConfigs[0].safetyParam & ~(0xFF | int(ToyotaSafetyFlags.ALT_BRAKE) | int(ToyotaSafetyFlags.LTA))))
 
 
 def apply_toyota_auto_hold(CP, enabled: bool) -> bool:
@@ -184,7 +186,7 @@ class CarInterface(CarInterfaceBase):
 
     if smart_dsu:
       ret.flags |= int(ToyotaFlags.HYBRID | ToyotaFlags.LONG_FILTER)
-      ret.safetyConfigs[0].safetyParam = 4169
+      ret.safetyConfigs[0].safetyParam = 0x8049  # EPS73 status uses the existing EPS8 smartDSU receiver.
       ret.openpilotLongitudinalControl = True
     from opendbc.car.toyota import legacy_advert_filter
     legacy_advert = legacy_advert_filter.hardware_supported(candidate, fingerprint, car_fw)
@@ -252,6 +254,9 @@ class CarInterface(CarInterfaceBase):
     from opendbc.car.toyota import prius_advert_filter
     if prius_advert_filter.hardware_supported(candidate, fingerprint, car_fw):
       prius_advert_filter.apply(ret)
+    from opendbc.car.toyota import dsu_bypass
+    if dsu_bypass.hardware_supported(candidate, fingerprint, car_fw):
+      dsu_bypass.apply(ret)
     from opendbc.car.toyota import pedal
     if ret.openpilotLongitudinalControl and pedal.hardware_supported(candidate, fingerprint, car_fw):
       ret.flags |= int(ToyotaFlags.GAS_INTERCEPTOR)

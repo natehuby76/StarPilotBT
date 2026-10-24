@@ -52,6 +52,27 @@ class LifecycleShardTests(unittest.TestCase):
                 if any(helper.matches(identity, target) for target in shard)]
     self.assertCountEqual(selected, identities)
 
+  def test_measured_pedal_callers_keep_complete_module(self):
+    module = 'openpilot/starpilot/car/toyota/tests/test_pedal_parent_callers.py'
+    policy = helper.workload_policy()
+    measured = policy['modules'][module]
+    self.assertNotIn(module, policy['function_groups'])
+    self.assertEqual(measured['cases'], 92)
+    self.assertGreater(measured['seconds'], 100 * policy['unknown_seconds_per_case'])
+    self.assertEqual(len(measured['source_sha256']), 64)
+    self.assertEqual(measured['reference']['artifact_id'], 12574163616)
+    prefix = module.removesuffix('.py').replace('/', '.') + '.'
+    identities = [prefix + f'test_case[{index}]' for index in range(92)]
+    identities += [f'other.test_case[{index}]' for index in range(100)]
+    targets = [module, 'other.py']
+    shards = helper.partition(targets, identities, 2)
+    self.assertEqual(shards, [[module], ['other.py']])
+    self.assertCountEqual([target for shard in shards for target in shard], targets)
+    selected = [identity for shard in shards for identity in identities
+                if any(helper.matches(identity, target) for target in shard)]
+    self.assertCountEqual(selected, identities)
+    self.assertEqual(shards, helper.partition(list(reversed(targets)), list(reversed(identities)), 2))
+
   def test_only_large_reviewed_heavy_functions_split_into_exact_parameter_leaves(self):
     heavy = 'openpilot/starpilot/car/toyota/tests/test_legacy_advert_callers.py'
     prefix = heavy.removesuffix('.py').replace('/', '.') + '.'
@@ -100,7 +121,7 @@ class LifecycleShardTests(unittest.TestCase):
       with self.subTest(targets=targets), self.assertRaises(ValueError):
         helper.partition(targets, ids, 4)
     with self.assertRaises(ValueError):
-      helper.partition(['other.py'], ['other.test_case'], 9)
+      helper.partition(['other.py'], ['other.test_case'], 17)
 
   def test_future_declared_module_does_not_add_any_cases(self):
     targets, identities = self.catalog()
@@ -109,9 +130,11 @@ class LifecycleShardTests(unittest.TestCase):
     camera = 'openpilot/starpilot/car/toyota/tests/test_camera_2aa_callers.py'
     self.assertFalse(any(camera in target for shard in shards for target in shard))
 
-  def documents(self):
+  def documents(self, suite="aol-lifecycle"):
     targets, full = self.catalog()
-    partition = helper.partition(targets, full, 4)
+    partitioner = helper.release_partition if suite == "safety-release" else helper.partition
+    matcher = helper.release_matches if suite == "safety-release" else helper.matches
+    partition = partitioner(targets, full, 4)
     source: dict = dict.fromkeys(('revision', 'inputs', 'manifest_sha256', 'dependencies', 'runner_sha256',
                                     'suite_runner_sha256', 'pytest_runner_sha256', 'shard_runner_sha256'), 'same')
     inventory_bytes = Path(__file__).parents[1].joinpath('lifecycle_build_outputs.json').read_bytes()
@@ -125,11 +148,12 @@ class LifecycleShardTests(unittest.TestCase):
                                                                for name, checksum in can_sources.items()})
     docs = []
     for index, assigned in enumerate(partition):
-      ids = [identity for identity in full if any(helper.matches(identity, target) for target in assigned)]
-      doc = {'suite': 'aol-lifecycle', 'status': 'completed', 'exit_code': 0, 'shard': {'index': index, 'count': 4},
+      ids = [identity for identity in full if any(matcher(identity, target) for target in assigned)]
+      doc = {'suite': suite, 'status': 'completed', 'exit_code': 0, 'shard': {'index': index, 'count': 4},
              'targets': assigned, 'selected_test_ids': ids, 'full_catalog_targets': targets, 'full_catalog_test_ids': full,
              'collection_errors': [], 'gate_errors': [], 'source': source, 'source_after': source,
-             'native': {'can_sources': can_sources, 'pycapnp': {'sha256': 'b' * 64}, 'safety': {'sha256': '1' * 64}, 'aol_protocol': {'sha256': '2' * 64}}}
+             'native': {'can_sources': can_sources, 'pycapnp': {'sha256': 'b' * 64}, 'safety': {'sha256': '1' * 64,
+                        'variant': 'release', 'all_output_hook_available': False}, 'aol_protocol': {'sha256': '2' * 64}}}
       result = {'selected_test_ids': ids, 'exit_code': 0, 'collection_errors': [], 'gate_errors': [],
                 'results': [{'id': identity, 'status': 'passed'} for identity in ids]}
       docs.append((doc, result))
@@ -154,7 +178,55 @@ class LifecycleShardTests(unittest.TestCase):
         (path / 'coverage.json').write_text(json.dumps(doc))
       if artifact_mutation is not None:
         artifact_mutation(Path(directory))
-      return helper.aggregate(directory, 4)
+      return helper.aggregate(directory, 4, docs[0][0]["suite"])
+
+  def test_release_partition_accepts_real_class_selectors_and_import_aliases(self):
+    targets = ['opendbc_repo/opendbc/safety/tests/a.py::TestRelease', 'b.py::test_case[one]', 'c.py']
+    ids = ['opendbc.safety.tests.a.TestRelease.test_denied', 'b.test_case[one]', 'c.Test.test_one']
+    shards = helper.release_partition(targets, ids, 4)
+    self.assertCountEqual([target for shard in shards for target in shard], targets)
+    self.assertEqual(sum(sum(any(helper.release_matches(identity, target) for target in shard) for identity in ids) for shard in shards), len(ids))
+    for bad_targets, bad_ids in ((targets, ids + ids), (targets + ['c.py::Test'], ids), (targets, ids + ['foreign.test']),
+                                (targets + ['empty.py'], ids), (['../escape.py'], ['escape.test'])):
+      with self.subTest(targets=bad_targets), self.assertRaises(ValueError):
+        helper.release_partition(bad_targets, bad_ids, 4)
+
+  def test_release_aggregate_retains_all_outcome_and_native_guards(self):
+    docs = self.documents('safety-release')
+    self.assertEqual(self.check(copy.deepcopy(docs))['cases_passed'], 12)
+    for change in ('missing', 'duplicate', 'debug', 'allOutput', 'wrong_suite'):
+      bad = json.loads(json.dumps(docs))
+      if change == 'missing':
+        bad[0][1]['results'].pop()
+      elif change == 'duplicate':
+        bad[0][1]['results'].append(bad[0][1]['results'][0])
+      elif change == 'skip':
+        bad[0][1]['results'][0]['status'] = 'skipped'
+      elif change == 'debug':
+        bad[0][0]['native']['safety']['variant'] = 'ALLOW_DEBUG'
+      elif change == 'allOutput':
+        bad[0][0]['native']['safety']['all_output_hook_available'] = True
+      else:
+        bad[0][0]['suite'] = 'interfaces'
+      with self.subTest(change=change), self.assertRaises((ValueError, KeyError, StopIteration)):
+        self.check(bad)
+
+  def test_release_preserves_existing_skips_without_counting_them_as_passed(self):
+    docs = self.documents('safety-release')
+    docs[0][1]['results'][0].update(status='skipped', detail='DEBUG classic Bosch owner')
+    verdict = self.check(copy.deepcopy(docs))
+    self.assertEqual(verdict['cases_passed'], 11)
+    self.assertEqual(verdict['cases_skipped'], 1)
+    self.assertEqual(verdict['cases_total'], 12)
+    for status in ('failed', 'error', 'xfailed', 'xpassed', 'not_run', 'timed_out'):
+      bad = copy.deepcopy(docs)
+      bad[0][1]['results'][0]['status'] = status
+      with self.subTest(status=status), self.assertRaises(ValueError):
+        self.check(bad)
+    for doc, _ in docs:
+      doc['suite'] = 'aol-lifecycle'
+    with self.assertRaises(ValueError):
+      self.check(docs)
 
   def test_complete_catalog_passes(self):
     self.assertEqual(self.check(self.documents())['cases_passed'], 12)

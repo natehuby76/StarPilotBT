@@ -388,7 +388,7 @@ def test_sdgm_long_brake_withdrawal_keeps_main_lateral(gm_host_heartbeat_bridge,
 @pytest.mark.parametrize('pedal', ('brake', 'regen'))
 @pytest.mark.parametrize('status', (2, 3))
 def test_sdgm_factory_eps_withdrawal_and_recovery(gm_host_heartbeat_bridge, c9, pedal, status):
-  """Temporary and permanent factory EPS faults have distinct intent recovery."""
+  """Factory EPS faults withdraw output; healthy MAIN recovers independent LAT."""
   from openpilot.starpilot.aol.wire import decode_safety
   with OpenpilotPrefix(), ExitStack() as cleanup, mock.patch.dict(os.environ, {'SIMULATION': '0', 'AOL_REPLAY_RUNTIME': '1'}):
     joined = joined_case(cleanup, gm_host_heartbeat_bridge, c9=c9, engage=True)
@@ -446,23 +446,19 @@ def test_sdgm_factory_eps_withdrawal_and_recovery(gm_host_heartbeat_bridge, c9, 
     for index in range(35, 40):
       axis, command, mask, _ = cycle(index)
       assert not current['last_cs'].steerFaultTemporary and not current['last_cs'].steerFaultPermanent
-      if status == 2:
-        assert card.aol_card_intent.allowed_latch
-        recovered |= bool(axis.lateralActive and command.latActive and mask == 1)
-      else:
-        assert not card.aol_card_intent.allowed_latch
+      if not card.aol_card_intent.allowed_latch:
         assert not axis.lateralActive and not command.latActive and mask == 0
-    if status == 2:
-      assert recovered  # Fresh native acknowledgment, without MAIN/SET or LONG.
-      assert nonzero_native_request()
-    else:
-      # A permanent fault keeps the existing physical MAIN-cycle requirement.
-      for index in range(40, 44):
-        axis, command, mask, _ = cycle(index, main=False)
-        assert not card.aol_card_intent.allowed_latch and mask == 0
-        assert not axis.lateralActive and not command.latActive
-      for index in range(44, 49):
-        axis, command, mask, _ = cycle(index)
-        recovered |= bool(axis.lateralActive and command.latActive and mask == 1)
-      assert recovered and card.aol_card_intent.allowed_latch
-      assert nonzero_native_request()
+      recovered |= bool(card.aol_card_intent.allowed_latch and axis.lateralActive and command.latActive and mask == 1)
+    # Fresh healthy EPS and native acknowledgment recover persistent MAIN intent.
+    # Neither an active fault nor a missing native grant was accepted above.
+    assert recovered and nonzero_native_request()
+    for index in range(40, 44):
+      axis, command, mask, _ = cycle(index, main=False)
+      assert not card.aol_card_intent.allowed_latch and mask == 0
+      assert not axis.lateralActive and not command.latActive
+    recovered = False
+    for index in range(44, 49):
+      axis, command, mask, _ = cycle(index)
+      recovered |= bool(axis.lateralActive and command.latActive and mask == 1)
+    assert recovered and card.aol_card_intent.allowed_latch
+    assert nonzero_native_request()

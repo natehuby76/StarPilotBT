@@ -145,6 +145,7 @@ class CarController(CarControllerBase):
     if (self.frame % CarControllerParams.STEER_STEP) == 0 and self.bp_lat is not None:
       can_sends += self.bp_lat.step_lateral(CC, CS, self.packer, self.CAN, self.frame, now_nanos)
       self.apply_curvature_last = self.bp_lat.apply_curvature_last
+      self.mache_ui_owned |= bool(self.bp_lat.announced.active and self.bp_lat.pending.active)
     elif (self.frame % CarControllerParams.STEER_STEP) == 0 and self.CP.flags & FordFlags.LKA_STEERING:
       # Preserve the stock LMC heartbeat without requesting lateral action.
       can_sends.append(fordcan.create_lat_ctl_msg(self.packer, self.CAN, False, 0., 0., 0., 0.,
@@ -337,7 +338,7 @@ class CarController(CarControllerBase):
     ### ui ###
     # Acquire the display after the first active replacement, then retain it while
     # AOL stays active, including a manual-turn steering handoff (as on Dom).
-    aol_mache_ui = self.mache_lateral is not None and qualified_aol(self.CP, marked_only=True)
+    aol_mache_ui = self.CP.carFingerprint == CAR.FORD_MUSTANG_MACH_E_MK1 and qualified_aol(self.CP, marked_only=True)
     ui_enabled = CC.latActive and (not aol_mache_ui or self.mache_ui_owned)
     if not aol_mache_ui or ui_enabled:
       send_ui = (self.main_on_last != main_on) or (self.lkas_enabled_last != ui_enabled) or (self.steer_alert_last != steer_alert)

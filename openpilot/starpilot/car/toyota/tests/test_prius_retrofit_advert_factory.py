@@ -47,7 +47,7 @@ def test_eps73_fourbyte_rejects_ambiguous_topology(candidate,bad):
   fp=gen_empty_fingerprint()
   fp[0][0x2FF]=4
   changes={'primary7':(0,0x2FF,7),'mirror8':(2,0x2FF,8),'bus1':(1,0x2FF,4),
-           'pedal0':(0,0x201,6),'pedal2':(2,0x201,6),'twoaa0':(0,0x2AA,8),'twoaa2':(2,0x2AA,8),
+           'pedal0':(0,0x201,5),'pedal2':(2,0x201,6),'twoaa0':(0,0x2AA,8),'twoaa2':(2,0x2AA,8),
            'eps5':(0,0x262,5),'main7':(0,0x1D3,7),'camera7':(2,0x343,7)}
   bus,address,size=changes[bad]
   fp[bus][address]=size

@@ -23,6 +23,19 @@ from openpilot.starpilot.vehicle_startup import VehicleStartupOwner
 CARS = (CAR.GENESIS_G90, CAR.HYUNDAI_SONATA, CAR.HYUNDAI_SONATA_HYBRID, CAR.GENESIS_G80)
 
 
+@pytest.fixture(scope='module', autouse=True)
+def native_classic_positive_path():
+  # Positive diagnostic takeover is a DEBUG-only registry capability. The
+  # paired test_classic_startup_release suite retains RELEASE denial checks.
+  previous = libsafety_py.__dict__.get('libpath')
+  libsafety_py.load(libsafety_py._build_libsafety(release=False))
+  try:
+    yield
+  finally:
+    if previous is not None:
+      libsafety_py.load(previous)
+
+
 @pytest.mark.parametrize('identity', CARS)
 @pytest.mark.parametrize('scenario', (
   'healthy', 'stale_control', 'active_control', 'missing_source', 'native_mode',

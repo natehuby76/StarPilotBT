@@ -191,6 +191,8 @@ class StarShellSession:
         self.view.onroad.stock_confidence_reset = camera_owner.reset_stock_confidence_layer
         self.view.onroad.extra_overlays = lambda rect, state: camera_owner.render_model_source_layer(rect, show_long_indicator=None)
         self.view.onroad.compact_sidebar.personality_renderer = self._render_personality
+      else:
+        self.view.onroad.extra_overlays = lambda rect, state: camera_owner.render_model_source_layer(rect)
     except Exception:
       self.fonts.close()
       raise
@@ -309,7 +311,6 @@ class StarShellSession:
     if getattr(ui_state, "replay_clock", None) is not None:
       return False
     if getattr(self, "_projection_tap", False):
-      # Projected taps need live onroad state, regardless of this screen's page or visibility.
       return bool(ui_state.started and display_message(ui_state.sm, 'carState', time.monotonic_ns(),
                                                        after_frame=ui_state.started_frame) is not None)
     if self._mode != ShellMode.ONROAD:

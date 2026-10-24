@@ -38,7 +38,7 @@ def test_real_factory_parent_tunes_stock_pair_and_alpha(candidate, alpha, stock)
 @pytest.mark.parametrize('candidate', CARS)
 @pytest.mark.parametrize(
   'fp',
-  ({0: {0x201: 5}}, {0: {}, 2: {0x201: 6}}, {0: {0x201: 6}, 1: {0x201: 6}}, {0: {0x201: 6, 0x2FF: 4}}, {0: {0x201: 6, 0x2FF: 8}}, {0: {0x201: 6, 0x2AA: 8}}),
+  ({0: {0x201: 5}}, {0: {}, 2: {0x201: 6}}, {0: {0x201: 6}, 1: {0x201: 6}}, {0: {0x201: 5, 0x2FF: 4}}, {0: {0x201: 5, 0x2FF: 8}}, {0: {0x201: 5, 0x2AA: 8}}),
 )
 def test_conflicting_hardware_is_not_enrolled(candidate, fp):
   assert not pedal.configured(factory(candidate, fp=fp))

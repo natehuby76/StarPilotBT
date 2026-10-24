@@ -27,7 +27,7 @@ from openpilot.starpilot.car.toyota.tests.test_prius_sdsu_filter import original
     'bad_primary7',
     'bad_eps5',
     'bad_main7',
-    'retrofit47070',
+    'unknown_retrofit_firmware',
   ),
 )
 def test_original_prius_advert_refuses_unqualified_factory_sources(bad):
@@ -52,7 +52,7 @@ def test_original_prius_advert_refuses_unqualified_factory_sources(bad):
     else:
       eps.bus = 1
   elif bad == 'pedal':
-    fp[0][0x201] = 6
+    fp[0][0x201] = 5
   elif bad == 'twoaa':
     fp[0][0x2AA] = 8
   elif bad == 'bus1':
@@ -66,7 +66,7 @@ def test_original_prius_advert_refuses_unqualified_factory_sources(bad):
   elif bad == 'bad_main7':
     fp[0][0x1D3] = 7
   else:
-    fw = original_firmware(owner.RETROFIT_EPS)
+    fw = original_firmware(b'8965B47071' + bytes(6))
   assert not owner.hardware_supported(CAR.TOYOTA_PRIUS, fp, fw)
   cp = CarInterface.get_params(CAR.TOYOTA_PRIUS, fp, fw, True, False, False)
   assert not owner.configured(cp) and cp.safetyConfigs[0].safetyParam not in owner.WORDS

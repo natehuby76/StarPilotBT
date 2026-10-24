@@ -52,7 +52,7 @@ def test_manual_matrix_filter_rejects_other_topologies(length, mutation):
   elif mutation == 'foreign-bus':
     fingerprint[1][0x2FF] = length
   elif mutation.startswith('pedal-'):
-    fingerprint[0 if mutation.endswith('pt') else 2][0x201] = 6
+    fingerprint[0 if mutation.endswith('pt') else 2][0x201] = 5
   elif mutation.startswith('camera-filter-'):
     fingerprint[0 if mutation.endswith('pt') else 2][0x2AA] = 8
   elif mutation == 'wrong-eps-length':

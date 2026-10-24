@@ -67,3 +67,13 @@ def test_snapshot_failure_keeps_original_admission(cp):
   with patch.object(vehicle, '_car_params_bytes', return_value=None), \
        patch.object(aol, '_source_deadline_for_bytes', side_effect=AssertionError('snapshot unavailable')):
     assert outcome(aol.source_deadline_supported, cp) == outcome(original, cp)
+
+
+@pytest.mark.parametrize('brand', ('honda', 'gm', 'ford', 'mazda', 'tesla', 'toyota'))
+def test_other_brands_reject_before_serializing_deadline_cache_key(brand):
+  from openpilot.starpilot.aol.tests.test_vehicle_policy_cache import profile
+  cp = profile(brand)
+  expected = outcome(original, cp)
+  with patch.object(vehicle, '_car_params_bytes', side_effect=AssertionError('unrelated owner serialized')):
+    assert outcome(aol.source_deadline_supported, cp) == expected
+    assert outcome(aol.source_deadline_supported, cp.as_reader()) == expected

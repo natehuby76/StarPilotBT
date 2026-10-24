@@ -16,7 +16,7 @@ def test_complete_sdsu_cp_tunes_retained_for_advertisement(candidate, stock):
   fp[0][0x2FF] = 4
   new = CarInterface.get_params(candidate, fp, fw, False, False, False)
   assert legacy_advert_filter.enabled(new) and advert_filter.enabled(new)
-  assert not toyota_auto_hold_supported(new)
+  assert toyota_auto_hold_supported(new) == toyota_auto_hold_supported(old)
   if stock:
     assert rav4h_filter.prepare_stock(old) and advert_filter.prepare_stock(new)
   assert legacy_advert_filter.configured(new)

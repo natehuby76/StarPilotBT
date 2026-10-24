@@ -50,7 +50,7 @@ class Capture:
     self.messages[name] = messaging.log_from_bytes(raw)
 
 
-def joined_case(cleanup, bridge, *, c9=False, pedal='none', engage=False, cp=None):
+def joined_case(cleanup, bridge, *, c9=False, pedal='none', engage=False, cp=None, cold_boot=False):
   saved = Params()
   cleanup.callback(saved._finalizer)
   for key in ('OpenpilotEnabledToggle', 'AlwaysOnLateral', 'AlphaLongitudinalEnabled'):
@@ -99,6 +99,15 @@ def joined_case(cleanup, bridge, *, c9=False, pedal='none', engage=False, cp=Non
     return original_receive(sock)
 
   def update(now, rows):
+    if cold_boot and now < (BASE + 180_000_000) / 1e9:
+      changed = []
+      for row in rows:
+        if row.which() == 'deviceMotion':
+          row = row.as_builder()
+          row.deviceMotion.inputsOK = False
+          row = row.as_reader()
+        changed.append(row)
+      rows = changed
     if current['gap'] and not current['raw_ahead']:
       rows = [row for row in rows if row.which() not in ('aolIntentWire', 'carOutput', 'starpilotCarState')]
     actual = []
@@ -141,6 +150,13 @@ def joined_case(cleanup, bridge, *, c9=False, pedal='none', engage=False, cp=Non
       rows += [row for row in extra if row[0] in addresses and row[0] != 0xBE]
       rows.append(packer.make_can_msg('ECMAcceleratorPos', 0,
         {'BrakePedalPos': 10 if current['pedal'] == 'brake' else 0}))
+    if cold_boot and tick < 20:
+      gear_address = packer.make_can_msg('ECMPRDNL2', 0, {})[0]
+      wheel_addresses = {packer.make_can_msg(name, 0, {})[0] for name in ('EBCMWheelSpdFront', 'EBCMWheelSpdRear')}
+      rows = [row for row in rows if not (row[2] == 0 and row[0] in wheel_addresses | {gear_address})]
+      rows += [packer.make_can_msg('ECMPRDNL2', 0, {'PRNDL2': 2 if tick < 8 else 3 if tick < 14 else 4}),
+               packer.make_can_msg('EBCMWheelSpdFront', 0, {}),
+               packer.make_can_msg('EBCMWheelSpdRear', 0, {})]
     if card.CP.flags & GMFlags.PEDAL_LONG:
       sensor = bytearray(packer.make_can_msg('GAS_SENSOR', 0,
         {'INTERCEPTOR_GAS': 0., 'INTERCEPTOR_GAS2': 0., 'STATE': 0, 'COUNTER_PEDAL': tick % 4})[1])
@@ -509,3 +525,17 @@ def test_gm_initial_main_waits_on_original_soft_occurrence(index, braking, varia
     assert card.aol_card_intent.allowed_latch and not card.aol_transport_feedback.failed
     cycle(39, recovering=True)  # Native OFF while the fresh LAT request awaits acknowledgment.
     assert card.aol_card_intent.allowed_latch and not card.aol_transport_feedback.failed
+
+
+@pytest.mark.parametrize('cp_kind', ('sdgm', 'bolt'))
+def test_main_already_on_reverse_neutral_drive_autoarms_without_button_or_long(gm_host_heartbeat_bridge, cp_kind):
+  with OpenpilotPrefix(), ExitStack() as cleanup, mock.patch.dict(os.environ, {'SIMULATION': '0', 'AOL_REPLAY_RUNTIME': '1'}):
+    cp = sdgm_params(alpha=True) if cp_kind == 'sdgm' else route_bolt_params()
+    card, sd, controls, native, current, *_ = joined_case(cleanup, gm_host_heartbeat_bridge, cp=cp, cold_boot=True)
+    assert not native.get_controls_allowed()
+    assert card.aol_card_intent.allowed_latch
+    assert not card.aol_card_intent._main_cycle_required
+    assert all(row[1] for row in current['warmup_trace'])
+    assert all(not row[7] for row in current['warmup_trace'])
+    assert not any(row[6] for row in current['warmup_trace'][:20])
+    assert any(row[6] for row in current['warmup_trace'][20:])

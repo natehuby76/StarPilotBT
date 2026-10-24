@@ -58,6 +58,8 @@ def hardware_supported(candidate, fingerprint, car_fw):
 
 
 def configured(cp):
+  from opendbc.car.toyota.pedal_composite import hold_base_cp
+  cp = hold_base_cp(cp)
   from opendbc.car.toyota import pedal_composite
   if pedal_composite.configured(cp):
     return True

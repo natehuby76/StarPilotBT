@@ -12,12 +12,12 @@ def params(car, fp=None, alpha=False):
 class TestRetrofit(unittest.TestCase):
   def test_prius_smart_dsu_requires_exact_rack_and_source(self):
     from opendbc.car.structs import CarParams
-    rack = CarParams.CarFw.new_message(ecu=CarParams.Ecu.eps, fwVersion=b'8965B47070\x00\x00\x00\x00\x00\x00')
+    rack = CarParams.CarFw.new_message(ecu=CarParams.Ecu.eps, fwVersion=b'8965B47070\x00\x00\x00\x00\x00\x00', brand='toyota', address=0x7A1)
     from opendbc.car.toyota.prius_longitudinal import enabled
     from opendbc.car.toyota.prius_longitudinal import stopping_decel_rate
     for alpha in (False, True):
       cp = CarInterface.get_params(CAR.TOYOTA_PRIUS_RETROFIT, {0: {0x2FF: 4}, 1: {}, 2: {}}, [rack], alpha, False, False)
-      self.assertEqual(cp.safetyConfigs[0].safetyParam, 4169)
+      self.assertEqual(cp.safetyConfigs[0].safetyParam, 0xD049)
       self.assertTrue(enabled(cp))
       self.assertFalse(cp.dashcamOnly)
       self.assertTrue(cp.openpilotLongitudinalControl)
@@ -29,14 +29,14 @@ class TestRetrofit(unittest.TestCase):
     automatic = CarInterface.get_params(CAR.TOYOTA_PRIUS, {0: {0x2FF: 4}, 1: {}, 2: {}}, [rack], False, False, False)
     self.assertTrue(enabled(automatic))
     self.assertEqual(automatic.carFingerprint, CAR.TOYOTA_PRIUS)
-    self.assertEqual(automatic.safetyConfigs[0].safetyParam, 4169)
+    self.assertEqual(automatic.safetyConfigs[0].safetyParam, 0xD049)
     self.assertFalse(automatic.flags & ToyotaFlags.TSS2)
     self.assertAlmostEqual(automatic.steerActuatorDelay, .14)
     from opendbc.car.toyota.prius_longitudinal import configured, prepare_stock
     self.assertTrue(prepare_stock(automatic))
     self.assertTrue(configured(automatic))
     self.assertFalse(enabled(automatic))
-    self.assertEqual(automatic.safetyConfigs[0].safetyParam, 4681)
+    self.assertEqual(automatic.safetyConfigs[0].safetyParam, 0xD249)
     self.assertFalse(automatic.openpilotLongitudinalControl)
     self.assertTrue(automatic.pcmCruise)
     self.assertTrue(prepare_stock(automatic))
@@ -66,7 +66,7 @@ class TestRetrofit(unittest.TestCase):
       for field, value in (('passive', True), ('notCar', True), ('dashcamOnly', True),
                            ('pcmCruise', False), ('openpilotLongitudinalControl', True),
                            ('secOcRequired', True), ('flags', int(ToyotaFlags.GAS_INTERCEPTOR)),
-                           ('carFingerprint', CAR.TOYOTA_COROLLA), ('alternativeExperience', 160)):
+                           ('carFingerprint', CAR.TOYOTA_COROLLA), ('alternativeExperience', 96)):
         rejected = cp.as_reader().as_builder()
         setattr(rejected, field, value)
         self.assertFalse(qualified(rejected), field)
@@ -75,7 +75,7 @@ class TestRetrofit(unittest.TestCase):
         rejected.safetyConfigs[0].safetyParam = word
         self.assertFalse(qualified(rejected), word)
         self.assertFalse(native_accepts_cp(rejected, int(structs.CarParams.SafetyModel.toyota), word), word)
-      for ae in (0, 1, 33, 128, 160, 256, 288):
+      for ae in (0, 1, 33, 128, 96, 256, 544):
         rejected = cp.as_reader().as_builder()
         rejected.alternativeExperience = ae
         self.assertFalse(qualified(rejected, marked_only=True), ae)
@@ -89,7 +89,7 @@ class TestRetrofit(unittest.TestCase):
       rejected = cp.as_reader().as_builder()
       rejected.safetyConfigs[0].safetyModel = structs.CarParams.SafetyModel.noOutput
       self.assertFalse(qualified(rejected))
-      for fp in ({0: {0x2FF: 8}, 1: {}, 2: {}}, {0: {}, 1: {}, 2: {0x343: 8}}):
+      for fp in ({0: {0x2FF: 7}, 1: {}, 2: {}}, {0: {}, 1: {}, 2: {0x343: 8}}):
         takeover = params(CAR.TOYOTA_MATRIX_RETROFIT, fp, alpha)
         self.assertTrue(takeover.dashcamOnly)
         self.assertFalse(qualified(takeover))
@@ -114,7 +114,7 @@ class TestRetrofit(unittest.TestCase):
 
   def test_observed_takeover_requires_paired_port(self):
     for car in (CAR.TOYOTA_MATRIX_RETROFIT, CAR.TOYOTA_PRIUS_RETROFIT):
-      for fp in ({0: {0x2FF: 8}, 1: {}, 2: {}},
+      for fp in ({0: {0x2FF: 7}, 1: {}, 2: {}},
                  {0: {}, 1: {}, 2: {0x343: 8}}):
         cp = params(car, fp, True)
         self.assertTrue(cp.dashcamOnly)
@@ -133,7 +133,7 @@ class TestRetrofit(unittest.TestCase):
 
   def test_retrofit_rack_is_distinct_from_standard_prius(self):
     from opendbc.car.structs import CarParams
-    fw = CarParams.CarFw.new_message(ecu=CarParams.Ecu.eps, fwVersion=b'8965B47070\x00\x00\x00\x00\x00\x00')
+    fw = CarParams.CarFw.new_message(ecu=CarParams.Ecu.eps, fwVersion=b'8965B47070\x00\x00\x00\x00\x00\x00', brand='toyota', address=0x7A1)
     fp = {0: {}, 1: {}, 2: {}}
     cp = CarInterface.get_params(CAR.TOYOTA_PRIUS_RETROFIT, fp, [fw], False, False, False)
     self.assertFalse(cp.dashcamOnly)
@@ -170,7 +170,7 @@ class TestRetrofit(unittest.TestCase):
     from opendbc.car.toyota.values import DBC
 
     rack = structs.CarParams.CarFw.new_message(ecu=structs.CarParams.Ecu.eps,
-                                               fwVersion=b'8965B47070\x00\x00\x00\x00\x00\x00')
+                                               fwVersion=b'8965B47070\x00\x00\x00\x00\x00\x00', brand='toyota', address=0x7A1)
     cases = ((CAR.TOYOTA_PRIUS, False, 'ACC_CONTROL', 'DISTANCE', 0),
              (CAR.TOYOTA_PRIUS_RETROFIT, False, 'ACC_CONTROL', 'DISTANCE', 0),
              (CAR.TOYOTA_PRIUS, True, 'SDSU', 'FD_BUTTON', 0),
@@ -179,7 +179,7 @@ class TestRetrofit(unittest.TestCase):
              (CAR.TOYOTA_COROLLA_TSS2, False, 'ACC_CONTROL', 'DISTANCE', 2))
     for car, filtered, message, signal, bus in cases:
       with self.subTest(car=car, filtered=filtered):
-        cp = CarInterface.get_params(car, {0: {0x2FF: 4} if filtered else {}, 1: {}, 2: {}},
+        cp = CarInterface.get_params(car, {0: {0x2FF: 8} if filtered else {}, 1: {}, 2: {}},
                                      [rack] if filtered else [], False, False, False)
         cs = CarState(cp)
         parsers = cs.get_can_parsers(cp)

@@ -12,7 +12,7 @@ from opendbc.car.ford.interface import CarInterface
 from opendbc.car.ford.values import CAR, DBC
 from opendbc.safety.tests.libsafety import libsafety_py
 from opendbc.safety.tests import test_ford_aol
-from openpilot.common.params import Params
+from openpilot.common.params import Params, ParamKeyFlag, ParamKeyType
 from openpilot.common.prefix import OpenpilotPrefix
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.starpilot.car.ford.cluster_preferences import FordClusterPreference, KEY
@@ -137,3 +137,21 @@ def test_recorded_turn_keeps_dom_display_and_hands_free_does_not_change_steering
   hands_free = run_turn(hands_free=True, angle=angle, torque=torque, desired=desired, speed=speed, yaw=yaw)
   plain = run_turn(hands_free=False, angle=angle, torque=torque, desired=desired, speed=speed, yaw=yaw)
   assert plain == hands_free
+
+
+@pytest.mark.parametrize('saved', [False, True])
+@pytest.mark.parametrize('flag', [ParamKeyFlag.CLEAR_ON_MANAGER_START, ParamKeyFlag.CLEAR_ON_ONROAD_TRANSITION,
+                                 ParamKeyFlag.CLEAR_ON_OFFROAD_TRANSITION, ParamKeyFlag.CLEAR_ON_IGNITION_ON])
+def test_cluster_preference_survives_native_cleanup(tmp_path, saved, flag):
+  params = Params(str(tmp_path))
+  key = 'FordHandsFreeCluster'
+  assert params.check_key(key) and params.get_type(key) == ParamKeyType.BOOL
+  params.put(key, saved, block=True)
+  sentinel = Path(params.get_param_path('FordUnregisteredSentinel'))
+  sentinel.write_bytes(b'1')
+  params.clear_all(flag)
+  assert params.get(key) == saved and not sentinel.exists()
+  reopened = Params(str(tmp_path))
+  assert reopened.get(key) == saved
+  assert Path(reopened.get_param_path(key)).read_bytes() == (b'1' if saved else b'0')
+  assert FordClusterPreference(reopened).enabled == saved

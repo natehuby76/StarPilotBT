@@ -160,7 +160,7 @@ def test_injected_relay_fault_refusal(matrix):
   assert not matrix.tx('STEERING_LKA', {'STEER_TORQUE_CMD': 1, 'STEER_REQUEST': 1})
 
 
-@pytest.mark.parametrize('experience', (0, 1, 33, 128, 160, 256, 288))
+@pytest.mark.parametrize('experience', (0, 1, 33, 128, 96, 256, 544))
 def test_other_alternative_experiences_remain_unadmitted(experience):
   case = Physical(experience=experience)
   try:

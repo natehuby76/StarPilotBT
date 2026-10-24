@@ -201,6 +201,7 @@ static bool ford_aol_param_valid(uint16_t param) {
     case 8U: case 9U: case 10U: case 12U: case 13U: case 18U: case 32U: case 33U: case 66U:
       result = true;
       break;
+    case 146U: case 147U: case 160U: case 161U: case 194U: case 195U:
     case 11U: case 19U: case 67U:
       result = true;
       break;
@@ -214,7 +215,7 @@ static void ford_aol_configure(uint16_t param) {
   ford_aol_reset();
   ford_aol_enabled = ford_aol_param_valid(param) && ((unsigned int)alternative_experience == 32U);
   ford_aol_manual = (param & 256U) != 0U;
-  ford_aol_param = param & ~256U;
+  ford_aol_param = param & ~(256U | 128U);
   if (ford_aol_enabled) {
     static const AolSafetyPolicy policy = {
       .reset = ford_aol_reset,

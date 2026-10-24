@@ -139,8 +139,8 @@
       "seconds_per_case": 4.0
     },
     "openpilot/starpilot/car/toyota/tests/test_camera_2aa_callers.py": {
-      "basis": "Owner estimate164cases274s; only actual collected IDs when present",
-      "seconds_per_case": 2.0
+      "seconds_per_case": 5.0,
+      "basis": "Hosted tests40108387164 custom14 completed40 real callers in138.037160s including setup/teardown. Five seconds is a conservative scheduling estimate, not full-module timing or a changed test deadline."
     },
     "openpilot/starpilot/car/toyota/tests/test_legacy_advert_callers.py": {
       "basis": "Estimate from incomplete72cases213s; independent parameter cases reviewed",
@@ -157,6 +157,14 @@
     "openpilot/starpilot/car/toyota/tests/test_prius_sdsu_callers.py": {
       "basis": "90 actual DEBUG/RELEASE caller cases passed in four bounded phases (186.885s combined wall time including startup). Scheduling estimate 3s/case; fresh per-case Params, raw CAN, native configuration and C++ host reset; no shared outcome dependence.",
       "seconds_per_case": 3.0
+    },
+    "openpilot/starpilot/car/toyota/tests/test_camera_pedal_extension_callers.py": {
+      "basis": "d570 hosted custom23: fresh per-case Params/native configuration/controller/cleanup source-reviewed. Completed actual call phases: camera96cases392.49s; EPS8partial137cases283.95s. Five seconds per case is a scheduling estimate, not whole-module timing. Full individual timelines remain intact.",
+      "seconds_per_case": 5.0
+    },
+    "openpilot/starpilot/car/toyota/tests/test_eps8_sdsu_callers.py": {
+      "basis": "d570 hosted custom23: fresh per-case Params/native configuration/controller/cleanup source-reviewed. Completed actual call phases: camera96cases392.49s; EPS8partial137cases283.95s. Five seconds per case is a scheduling estimate, not whole-module timing. Full individual timelines remain intact.",
+      "seconds_per_case": 5.0
     }
   },
   "independent_max_cases": 60,
@@ -1397,6 +1405,30 @@
       "blob": "58eaefa7a396f875ddf7df6aca712dfdcf4a476c",
       "cases": 18,
       "seconds": 0.02584481600001709
+    },
+    "openpilot/starpilot/car/toyota/tests/test_legacy_eps5_sdsu_callers.py": {
+      "cases": 84,
+      "seconds": 310.978236,
+      "blob": "75e5f761feca78918ec2c6537bee3a898e79653a",
+      "basis": "Actual complete-module setup/call/teardown receipts, hosted tests40108387164 custom14; same source blob. Scheduling estimate only; all original cases and timeout retained."
+    },
+    "openpilot/starpilot/tests/test_ford_bluepilot_aol.py": {
+      "cases": 64,
+      "seconds": 147.861995,
+      "blob": "cf201fab94f604dc6b9e9ea8789309c18074375d",
+      "basis": "Actual complete-module setup/call/teardown: DEBUG 96.479484s, RELEASE 98.574663s; conservative 1.5x host allowance. Scheduling estimate only; all cases and timeout retained."
+    },
+    "openpilot/starpilot/car/toyota/tests/test_sdsu_priority_callers.py": {
+      "cases": 204,
+      "seconds": 612.050501,
+      "blob": "3f8196b546f7de4ec09af452552b34b71b692371",
+      "basis": "Hosted tests40117319129 custom22: 199/204 actual cases completed in 477.639410s of setup/call/teardown before whole-shard timeout. Projected full case count at observed mean with 25 percent allowance; scheduling estimate only. Original cases, grouping and 900s deadline retained."
+    },
+    "openpilot/starpilot/car/toyota/tests/test_radar_filter_variant_callers.py": {
+      "cases": 48,
+      "seconds": 254.992359,
+      "blob": "c54a2f6be83b36f3c0f2f1e112d4ddffe980329d",
+      "basis": "Hosted tests40117319129 custom22: 48/48 actual cases completed in 203.993887s of setup/call/teardown before whole-shard timeout. Projected full case count at observed mean with 25 percent allowance; scheduling estimate only. Original cases, grouping and 900s deadline retained."
     }
   },
   "reference_sha": "6eb9df96425a661afcbf1edfa27894d6e49b3706",

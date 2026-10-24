@@ -42,6 +42,8 @@ def apply(cp):
 
 
 def configured(cp):
+  from opendbc.car.toyota.pedal_composite import parent_cp
+  cp = parent_cp(cp)
   from opendbc.car.toyota import prius_retrofit_advert
   if prius_retrofit_advert.configured(cp):
     return True
@@ -57,6 +59,9 @@ def configured(cp):
 
 
 def prepare_stock(cp):
+  from opendbc.car.toyota import pedal_composite
+  if pedal_composite.marked(cp):
+    return pedal_composite.prepare_stock(cp)
   if not configured(cp):
     return False
   cp.openpilotLongitudinalControl = False

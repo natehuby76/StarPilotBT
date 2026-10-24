@@ -218,3 +218,51 @@ def test_legacy_or_slotted_owner_keeps_full_validation(cp, legacy):
     assert runtime.current_native(sm, cp, now_ns=NOW) == expected
     assert runtime.current_native(sm, cp, now_ns=NOW) == expected
     assert check.call_count == 2
+
+
+def test_native_admission_visits_only_the_current_vehicle_owner(cp):
+  from contextlib import ExitStack
+  config = (vehicle.hyundai.aol_safety_config(cp) if cp.brand == 'hyundai' else
+            vehicle.ford.aol_safety_config(cp) if cp.brand == 'ford' else
+            vehicle.volkswagen.aol_safety_config(cp) if cp.brand == 'volkswagen' else cp.safetyConfigs[-1])
+  model, param = int(config.safetyModel.raw), int(config.safetyParam)
+  assert vehicle.native_matches_cp(cp, model, param)
+  with ExitStack() as cleanup:
+    for brand, port in vehicle._PORTS.items():
+      if brand != cp.brand:
+        cleanup.enter_context(patch.object(port, 'native_accepts_cp', side_effect=AssertionError('unrelated owner called')))
+    assert vehicle.native_matches_cp(cp, model, param)
+    assert not vehicle.native_matches_cp(cp, model, param ^ 0x40000000)
+
+
+def test_registered_dispatch_matches_original_all_ports_oracle(cp):
+  # Evaluate the original function unchanged, including its owner special cases.
+  original = vehicle.native_matches_cp
+  config = (vehicle.hyundai.aol_safety_config(cp) if cp.brand == 'hyundai' else
+            vehicle.ford.aol_safety_config(cp) if cp.brand == 'ford' else
+            vehicle.volkswagen.aol_safety_config(cp) if cp.brand == 'volkswagen' else cp.safetyConfigs[-1])
+  model, param = int(config.safetyModel.raw), int(config.safetyParam)
+  for bad_model, bad_param in ((model, param), (model, param ^ 0x40000000), (0, param), (model, -1)):
+    expected = bool(any(port.native_accepts_cp(cp, bad_model, bad_param) for port in vehicle._PORTS.values()) and
+                    bad_model == int(cp.safetyConfigs[0].safetyModel.raw) and
+                    bad_param == int(cp.safetyConfigs[-1].safetyParam))
+    # Multi-owner/family-special paths retain their original production checks.
+    if cp.brand in ('hyundai', 'ford', 'volkswagen') or cp.brand == 'honda' and len(cp.safetyConfigs) == 2:
+      assert original(cp, bad_model, bad_param) == (bad_model == model and bad_param == param)
+    else:
+      assert original(cp, bad_model, bad_param) == expected
+
+
+def test_no_host_event_skips_all_family_temporary_qualifications(cp):
+  from contextlib import ExitStack
+  from types import SimpleNamespace
+  from opendbc.car.structs import CarState
+  from opendbc.car.hyundai import canfd_angle_aol, canfd_stock_aol, classic_scc_aol
+  from openpilot.starpilot.aol.transport_pause import TransportPauseFeedback
+  feedback = TransportPauseFeedback(cp)
+  state = CarState(canValid=True)
+  with ExitStack() as cleanup:
+    for module in (canfd_angle_aol, canfd_stock_aol, classic_scc_aol):
+      cleanup.enter_context(patch.object(module, 'qualified', side_effect=AssertionError('healthy cycle qualified unrelated temporary role')))
+    assert not feedback._temporary_host_intent_current({'onroadEvents': []}, cp, state, SimpleNamespace(), 10, 10,
+                                                       latched=True, producer='producer')

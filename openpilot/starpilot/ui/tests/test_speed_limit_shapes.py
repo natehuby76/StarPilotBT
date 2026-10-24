@@ -28,13 +28,16 @@ def test_atlas_matches_generated_geometry_and_has_symmetric_antialiased_edges():
         center = alpha[:, width//2]
         painted = np.flatnonzero(center > 40)
         assert painted[-1] - painted[0] + 1 == len(painted)
+      if name == 'outline':
+        assert not alpha[18:-18, 18:-18].any(), 'the camera must remain visible inside the sign'
+        assert np.array_equal(alpha, alpha[::-1]), 'rounded corners must be symmetric'
 
 
 @pytest.fixture
 def gpu(monkeypatch):
   monkeypatch.setattr(shapes.rl, 'is_window_ready', lambda: True)
   calls = {}
-  for name, value in (('load_image', NS(data=1, width=256, height=176)),
+  for name, value in (('load_image', NS(data=1, width=shapes.ATLAS_SIZE[0], height=shapes.ATLAS_SIZE[1])),
                       ('load_texture_from_image', NS(id=7)), ('unload_image', None), ('unload_texture', None),
                       ('set_texture_filter', None), ('set_texture_wrap', None), ('draw_texture_pro', None)):
     calls[name] = Mock(return_value=value)
@@ -46,6 +49,13 @@ def test_shapes_share_one_upload_and_arrow_is_one_draw_in_either_direction(gpu):
   owner = shapes.SpeedLimitShapes()
   owner.circle(389, 87, shapes.rl.RED)
   assert gpu['draw_texture_pro'].call_count == 2
+  gpu['draw_texture_pro'].reset_mock()
+  owner.outline(59, 66, shapes.rl.WHITE)
+  owner.outline(59, 66, shapes.rl.WHITE)
+  assert gpu['draw_texture_pro'].call_count == 2
+  _, source, destination, _, _, _ = gpu['draw_texture_pro'].call_args.args
+  assert (source.width, source.height) == (128, 144)
+  assert (destination.x, destination.y) == (59, 66)
   for direction, rotation in ((1, 0), (-1, 180)):
     gpu['draw_texture_pro'].reset_mock()
     owner.arrow('compact', 389, 49, direction, shapes.rl.BLACK)

@@ -3,7 +3,7 @@ from opendbc.car import gen_empty_fingerprint, structs
 from opendbc.car.toyota import legacy_sdsu
 from opendbc.car.toyota.carstate import CarState
 from opendbc.car.toyota.interface import CarInterface, apply_toyota_auto_hold
-from opendbc.car.toyota.values import CAR, CarControllerParams, EPS_SCALE
+from opendbc.car.toyota.values import CAR, CarControllerParams, EPS_SCALE, TOYOTA_AUTO_HOLD_CARS
 from openpilot.starpilot.car.toyota.tests.test_pedal_caller_native import firmware
 from openpilot.starpilot.car.toyota.aol import qualified
 
@@ -37,7 +37,9 @@ def test_full_configuration_and_tune_preserved(candidate, alpha, hybrid):
   assert before == after
   old_limits, new_limits = CarControllerParams(baseline), CarControllerParams(actual)
   assert (old_limits.ACCEL_MIN, old_limits.ACCEL_MAX) == (new_limits.ACCEL_MIN, new_limits.ACCEL_MAX)
-  assert not apply_toyota_auto_hold(actual, True)
+  hold = actual.as_reader().as_builder()
+  assert apply_toyota_auto_hold(hold, True) == (candidate in TOYOTA_AUTO_HOLD_CARS)
+  assert actual.to_dict() == CarInterface.get_params(candidate, fp, fw, alpha, False, False).to_dict()
   assert legacy_sdsu.configured(actual)
   assert legacy_sdsu.prepare_stock(actual) and legacy_sdsu.configured(actual) and qualified(actual)
   assert actual.safetyConfigs[0].safetyParam == legacy_sdsu.PROFILES[candidate][1]

@@ -39,7 +39,7 @@ def cc_independent_lateral_below_engage(cp, intent, *, enabled, active):
 def f1_conventional_lateral_owner(cp) -> bool:
   """Exact development F1 conventional-cruise owner; no pedal or ACC profile."""
   from opendbc.car.gm.values import VOLT_CC_F1_WORD, is_volt_cc_profile
-  return bool(qualified_gm(cp) and aol_enabled(cp) and is_volt_cc_profile(cp) and
+  return bool(is_volt_cc_profile(cp) and qualified_gm(cp) and aol_enabled(cp) and
               int(cp.safetyConfigs[0].safetyParam) == VOLT_CC_F1_WORD)
 
 
@@ -202,7 +202,7 @@ def stock_ascm_independent_lateral(cp) -> bool:
 
 
 class GmAolCardIntent(AolCardIntent):
-  """Main-following intent with explicit main-cycle recovery after fatal faults."""
+  """Follow physical MAIN; a current fault inhibits intent until healthy again."""
 
   def __init__(self, settings, cp=None):
     super().__init__(settings, lkas_button_supported=False)
@@ -229,6 +229,7 @@ class GmAolCardIntent(AolCardIntent):
 
   def update(self, CS, *, consumed_buttons=frozenset(), fault_active=None,
              now_ns=0, native_rejection_ns=0, standard_enabled=False):
+    was_allowed = self.allowed_latch
     main_rise = False
     if CS.canValid and not CS.canTimeout:
       main_rise = bool(CS.cruiseState.available and not self._main_available)
@@ -236,7 +237,9 @@ class GmAolCardIntent(AolCardIntent):
     fault = bool(fault_active or CS.steerFaultPermanent)
     if fault:
       self._main_cycle_required = True
-    elif CS.canValid and not CS.canTimeout and not CS.cruiseState.available:
+    elif fault_active is False or CS.canValid and not CS.canTimeout and not CS.cruiseState.available:
+      # MAIN is a level on GM, including when already ON at startup. A fresh
+      # healthy fault observation restores that request without a button cycle.
       self._main_cycle_required = False
     super().update(CS, consumed_buttons=consumed_buttons, fault_active=fault_active,
                    now_ns=now_ns, native_rejection_ns=native_rejection_ns,
@@ -246,7 +249,7 @@ class GmAolCardIntent(AolCardIntent):
       self.startup_calibration_pending = False
     if not self.allowed_latch:
       self._main_arm_ns = 0
-    elif main_rise:
+    elif main_rise or not was_allowed:
       self._main_arm_ns = now_ns
 
   @property
@@ -277,6 +280,11 @@ class GmAolCardIntent(AolCardIntent):
       self.settings.enabled and self.main_action != AOL_TOGGLE and
       not CS.steerFaultPermanent and not self._main_cycle_required)
     if cold_readiness:
+      self._calibration_rearm_required = False
+    if (events is not None and cold_safe and not self._main_cycle_required and not any(
+        event.name in (log.OnroadEvent.EventName.calibrationInvalid,
+                       log.OnroadEvent.EventName.calibrationIncomplete,
+                       log.OnroadEvent.EventName.calibrationRecalibrating) for event in events)):
       self._calibration_rearm_required = False
     super().observe_calibration(CS, events=events, standard_enabled=standard_enabled)
     if cold_readiness:

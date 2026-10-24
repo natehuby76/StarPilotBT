@@ -217,7 +217,7 @@ def control_inputs(controls, published, state, sd_events, native, now):
       if name == 'modelV2':
         v.from_dict(model().to_dict())
       elif name == 'lateralManeuverPlan':
-        v.desiredCurvature = .00005
+        v.desiredCurvature = .0002 if controls.CP.steerControlType == structs.CarParams.SteerControlType.angle else .00005
       elif name == 'vehicleParameters':
         v.stiffnessFactor, v.steerRatio = 1.0, controls.CP.steerRatio
       elif name == 'longitudinalPlan':
@@ -232,7 +232,7 @@ def run_case(stock, scenario='nominal', *, aol=True, candidate=CAR.TOYOTA_RAV4H,
              sdsu_words=(0x9049, 0x9249), alpha_long=False, disable_setting=None, physical_frames=None, angle=False,
              firmware_override=None, assert_hybrid_release=False, sdsu_mirror=False, on_sample=None, camera_messages=False, filter_advert=False,
              brake_pause_mps=None, native_rx_expected=None, on_state=None, fingerprint_frames=None, manual_selection=False, native_tx_expected=None,
-             manual_filter_length=None):
+             manual_filter_length=None, manual_bypass=False, bypass_owner=False, manual_pedal=False, auto_hold=False):
   SYNTHETIC_LAST.clear()
   NATIVE_LAST.clear()
   safety = libsafety_py.libsafety
@@ -245,14 +245,32 @@ def run_case(stock, scenario='nominal', *, aol=True, candidate=CAR.TOYOTA_RAV4H,
       ('AlwaysOnLateral', aol),
       ('DisableOpenpilotLongitudinal', stock if disable_setting is None else disable_setting),
       ('AlphaLongitudinalEnabled', alpha_long),
-      ('ToyotaAutoHold', False),
+      ('ToyotaAutoHold', auto_hold),
     ):
       params.put_bool(k, v, block=True)
     if brake_pause_mps is not None:
       params.put('AolBrakePauseSpeedMps', float(brake_pause_mps), block=True)
     fw = firmware(candidate) if firmware_override is None else firmware_override
     if manual_selection:
-      if manual_filter_length is not None:
+      if manual_pedal:
+        from opendbc.car.toyota import pedal_composite
+        assert candidate in (CAR.TOYOTA_PRIUS, CAR.TOYOTA_PRIUS_RETROFIT, CAR.TOYOTA_MATRIX_RETROFIT)
+        assert fingerprint_frames is not None
+        acquired_fp = gen_empty_fingerprint()
+        for address, data, bus in fingerprint_frames:
+          acquired_fp[bus][address] = len(data)
+        assert acquired_fp[0].get(0x201) == 6
+        assert pedal_composite.hardware_supported(candidate, acquired_fp, fw)
+      elif manual_bypass:
+        assert fingerprint_frames is not None
+        assert candidate in (CAR.TOYOTA_MATRIX_RETROFIT, CAR.TOYOTA_PRIUS_RETROFIT) and bypass_owner
+        assert any(bus == 2 and address in (0x343, 0x4CB) and len(data) == 8 for address, data, bus in fingerprint_frames)
+        assert not any(address in (0x201, 0x2FF, 0x2AA) for address, _, _ in fingerprint_frames)
+        if candidate == CAR.TOYOTA_MATRIX_RETROFIT:
+          assert not fw and firmware_override == []
+        else:
+          assert any(f.ecu == structs.CarParams.Ecu.eps and f.address == 0x7A1 and f.bus == 0 and bytes(f.fwVersion) == b'8965B47070' + bytes(6) for f in fw)
+      elif manual_filter_length is not None:
         if candidate == CAR.TOYOTA_MATRIX_RETROFIT:
           assert manual_filter_length in (4, 8) and not fw and firmware_override == []
         else:
@@ -293,7 +311,8 @@ def run_case(stock, scenario='nominal', *, aol=True, candidate=CAR.TOYOTA_RAV4H,
       host = card_module.Car()
     assert host.CP.openpilotLongitudinalControl == (not stock)
     assert host.CP.safetyConfigs[0].safetyParam == sdsu_words[stock]
-    assert host.CP.alternativeExperience == 32
+    from opendbc.car.toyota.values import uses_toyota_auto_hold_aeb
+    assert host.CP.alternativeExperience == (32 | ((256 if uses_toyota_auto_hold_aeb(host.CP) else 128) if auto_hold else 0))
     controls, sd = Controls(), sd_module.SelfdriveD(CP=host.CP)
     assert controls.CP.to_dict() == host.CP.to_dict()
     safety.init_tests()
@@ -327,7 +346,7 @@ def run_case(stock, scenario='nominal', *, aol=True, candidate=CAR.TOYOTA_RAV4H,
       )
     )
     rows = {r.key: r for r in wheel.rows()}
-    if candidate == CAR.TOYOTA_RAV4H:
+    if candidate == CAR.TOYOTA_RAV4H and not bypass_owner:
       assert 'Bookmark' in rows['wheel:LKASButtonControl'].choices
       assert 'Toggle AOL' not in rows['wheel:LKASButtonControl'].choices
     assert not any('Cancel' in k or 'MainCruise' in k for k in rows)
@@ -348,7 +367,7 @@ def run_case(stock, scenario='nominal', *, aol=True, candidate=CAR.TOYOTA_RAV4H,
       )
     try:
       duration = {
-        'nominal': 251, 'physical': 601, 'faults': 801, 'bad_dlc': 801,
+        'hold': 501, 'nominal': 251, 'physical': 601, 'faults': 801, 'bad_dlc': 801,
         'off': 401, 'cold_low': 251, 'hybrid_stop': 251, 'main_lease': 501, 'identity_refusal': 501,
       }[scenario]
       for tick in range(1, duration):
@@ -532,7 +551,7 @@ def run_case(stock, scenario='nominal', *, aol=True, candidate=CAR.TOYOTA_RAV4H,
           }
         )
         nominal = tick >= 220 and (
-          scenario in ('nominal', 'cold_low', 'hybrid_stop')
+          scenario in ('nominal', 'cold_low', 'hybrid_stop') or scenario == 'hold' and tick < 250
           or scenario == 'identity_refusal' and tick < 250
           or scenario == 'main_lease' and (tick < 250 or tick >= 480)
           or scenario == 'off'
@@ -574,9 +593,11 @@ def run_case(stock, scenario='nominal', *, aol=True, candidate=CAR.TOYOTA_RAV4H,
             assert not host.CP.openpilotLongitudinalControl and not cc.longActive
             assert host.CP.safetyConfigs[0].safetyParam == sdsu_words[1]
           else:
-            preference = host.CI.CC.prius_filter_input if candidate == CAR.TOYOTA_PRIUS else (
+            from opendbc.car.toyota import pedal_composite
+            preference = (host.CI.CC.pedal_input if pedal_composite.configured(host.CP) else
+              host.CI.CC.bypass_input if bypass_owner else host.CI.CC.prius_filter_input if candidate == CAR.TOYOTA_PRIUS else (
               host.CI.CC.advert_filter_input if filter_advert or fingerprint_frames is not None and any(
-                address == 0x2AA for address, _, _ in fingerprint_frames) else host.CI.CC.rav4h_filter_input)
+                address == 0x2AA for address, _, _ in fingerprint_frames) else host.CI.CC.rav4h_filter_input))
             assert preference is not None and not preference.update(time.monotonic_ns())
             for f in outgoing_frames:
               if f.address == 0x343:

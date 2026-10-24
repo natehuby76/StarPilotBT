@@ -95,6 +95,18 @@ def _collect_applied_output(collector, applied, sm, cp, now_ns):
   return collector.output(applied, now_ns)
 
 
+def _configuration_calibration(sm, calibration_lifecycle, now):
+  # Calibration describes the vehicle frame, not a per-message command lease.
+  # Like torqued's PoseCalibrator, retain a valid calibrated transform between
+  # deliveries. Sample freshness and current native authority are checked
+  # independently when admitting physical observations and applying offers.
+  stamp = int(sm.logMonoTime['extrinsicsCalibration'])
+  receipt = int(round(sm.recv_time['extrinsicsCalibration'] * 1e9))
+  if not (sm.seen['extrinsicsCalibration'] and sm.valid['extrinsicsCalibration'] and
+          0 < stamp <= now and 0 < receipt <= now):
+    return calibration_lifecycle.observe(None, current=False)
+  return calibration_lifecycle.observe(sm['extrinsicsCalibration'], current=True)
+
 def _source_config_binding(source):
   return (source.cp_sha256, source.source_epoch, source.reset, source.calibration_generation,
           source.enabled, source.manual, source.persistent_source_epoch, tuple(source.manual_baseline))
@@ -931,14 +943,7 @@ def main():
   calibration_lifecycle = ProducerCalibrationLifecycle()
 
   def calibration_frame(now):
-    stamp = int(sm.logMonoTime['extrinsicsCalibration'])
-    receipt = int(sm.recv_time['extrinsicsCalibration'] * 1e9)
-    current = bool(sm.all_checks(['extrinsicsCalibration']) and
-      0 < stamp <= now <= stamp + 500_000_000 and
-      0 < receipt <= now <= receipt + 500_000_000)
-    if not sm.valid['extrinsicsCalibration'] or stamp > now or receipt > now:
-      return calibration_lifecycle.observe(None, current=False)
-    return calibration_lifecycle.observe(sm['extrinsicsCalibration'], current=current)
+    return _configuration_calibration(sm, calibration_lifecycle, now)
 
   def current_source(now, frame):
     return read_source(CP, params, now_ns=now, cp_sha256=cp_sha256,

@@ -94,7 +94,8 @@ def native_matches_cp(CP, model: int, param: int) -> bool:
       config = volkswagen.aol_safety_config(CP)
       return bool(config is not None and volkswagen.native_accepts_cp(CP, model, param) and
                   model == int(config.safetyModel.raw) and param == int(config.safetyParam))
-    return bool(any(port.native_accepts_cp(CP, model, param) for port in _PORTS.values()) and
+    port = _PORTS.get(CP.brand)
+    return bool(port is not None and port.native_accepts_cp(CP, model, param) and
                 model == int(CP.safetyConfigs[0].safetyModel.raw) and
                 param == int(CP.safetyConfigs[-1].safetyParam))
   except (AttributeError, TypeError, ValueError, OverflowError, IndexError):

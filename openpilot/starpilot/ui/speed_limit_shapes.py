@@ -6,10 +6,11 @@ import pyray as rl
 
 
 ATLAS_PATH = Path(__file__).with_name('assets') / 'speed_limit_shapes.png'
-ATLAS_SIZE = (256, 176)
+ATLAS_SIZE = (384, 176)
 SPRITES = {
   'disc': (0, 0, 128, 128), 'ring': (128, 0, 128, 128),
   'arrow_large': (0, 128, 32, 40), 'arrow_compact': (32, 128, 16, 24),
+  'outline': (256, 0, 128, 144),
 }
 
 
@@ -52,6 +53,9 @@ class SpeedLimitShapes:
   def circle(self, x, y, color):
     self._draw('disc', x, y, rl.WHITE)
     self._draw('ring', x, y, color)
+
+  def outline(self, x, y, color):
+    self._draw('outline', x, y, color)
 
   def arrow(self, size, x, y, direction, color):
     self._draw('arrow_large' if size == 'large' else 'arrow_compact', x, y, color, 180 if direction < 0 else 0)

@@ -371,6 +371,7 @@ class LiveTrackingActor:
     if self.process is not None and self.process.child is not None:
       return  # At most one optional reconstruction/identification child.
     optimizer = self.ingress.optimizer
+    self.reason = optimizer.reason
     accepted = tuple((name, optimizer.accepted[name]) for name in NAMES)
     profile_hash = full_profile_sha256(self.certificate.binding.baseline_revision, dict(accepted))
     token = (self.token, self.certificate.model_revision, profile_hash)

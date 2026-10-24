@@ -149,7 +149,7 @@ def current_authority(sm, cp, *, now_ns, required):
         and sm.alive['pandaStates']
         and sm.valid['pandaStates']
         and sm.freq_ok['pandaStates']
-        and 0 <= now_ns - int(sm.recv_time['pandaStates'] * 1e9) <= 1_000_000_000
+        and 0 <= now_ns - int(round(sm.recv_time['pandaStates'] * 1e9)) <= 1_000_000_000
       )
       pandas = sm['pandaStates']
       if len(pandas) != len(cp.safetyConfigs):
@@ -202,7 +202,7 @@ def current_ford_authority(sm, cp, *, now_ns):
       raise ValueError('Ford downstream role')
     pandas = sm['pandaStates']
     stamp = int(sm.logMonoTime['pandaStates'])
-    receipt = int(sm.recv_time['pandaStates'] * 1e9)
+    receipt = int(round(sm.recv_time['pandaStates'] * 1e9))
     boot = time.clock_gettime_ns(time.CLOCK_BOOTTIME)
     allowed = bool(
       sm.seen['pandaStates']
@@ -622,7 +622,7 @@ def physical_observer(sm, cp, collector, now_ns, *, distinguish_pending=False):
       collector._physical_seen_pose = pose_ns
       evidence = PhysicalEvidence(
         pose_ns,
-        int(sm.recv_time['deviceMotion'] * 1e9),
+        int(round(sm.recv_time['deviceMotion'] * 1e9)),
         generation,
         digest((float(cp.steerRatio), float(cp.wheelbase), float(cp.centerToFront), float(cp.mass), collector._physical_clock, native_epoch, regime)),
         digest((lag,)), lag, 0.0,
@@ -654,7 +654,7 @@ def physical_observer(sm, cp, collector, now_ns, *, distinguish_pending=False):
       # clocks; this is NEVER a new physical sample or a current-fit grant.
       waiting = queue[0] if queue else None
       return PendingPhysical(pose_ns if waiting is None else waiting.mono_ns,
-        int(sm.recv_time['deviceMotion'] * 1e9) if waiting is None else waiting.received_ns, context_changed)
+        int(round(sm.recv_time['deviceMotion'] * 1e9)) if waiting is None else waiting.received_ns, context_changed)
     return None
   except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
     return reject()
@@ -726,7 +726,7 @@ def original_source_pose_observer(sm, cp, collector, now_ns, *, distinguish_pend
     ):
       return reject('pose_source_or_calibration_flags')
     if equivalence is not None:
-      source_lower, source_upper = source_interval(int(dm.timestamp), int(sm.recv_time['deviceMotion'] * 1e9), now_ns, equivalence)
+      source_lower, source_upper = source_interval(int(dm.timestamp), int(round(sm.recv_time['deviceMotion'] * 1e9)), now_ns, equivalence)
     else:
       source_lower = source_upper = pose_ns
     state_ns = int(sm.logMonoTime['carState'])
@@ -792,7 +792,7 @@ def original_source_pose_observer(sm, cp, collector, now_ns, *, distinguish_pend
             bool(panda.controlsAllowed), bool(panda.safetyRxChecksInvalid), bool(panda.heartbeatLost),
             tuple(str(fault) for fault in panda.faults)) for index, panda in enumerate(sm['pandaStates'])),
         )
-        ordinary_safety = ('ordinary-panda-current-v1', cp_sha, int(sm.recv_time['pandaStates'] * 1e9),
+        ordinary_safety = ('ordinary-panda-current-v1', cp_sha, int(round(sm.recv_time['pandaStates'] * 1e9)),
           int(sm.logMonoTime['pandaStates']), configuration)
       native = bool(
         ordinary_allowed and
@@ -850,7 +850,7 @@ def original_source_pose_observer(sm, cp, collector, now_ns, *, distinguish_pend
       pose = calibrator.build_calibrated_pose(Pose.from_device_motion(dm))
       collector._original_source_seen_pose = pose_ns
       evidence = OriginalSourcePose(
-        mono_ns=pose_ns, received_ns=int(sm.recv_time['deviceMotion'] * 1e9), observed_ns=now_ns,
+        mono_ns=pose_ns, received_ns=int(round(sm.recv_time['deviceMotion'] * 1e9)), observed_ns=now_ns,
         source_boot_ns=int(dm.timestamp) if contract.source_domain == 'boottime' else 0, clock_offset_ns=clock_offset,
         source_timestamp_ns=int(dm.timestamp), source_clock_domain=contract.source_domain,
         source_clock_contract=(contract.source_domain, contract.producer_revision, contract.proof_sha256, contract.scope),
@@ -905,7 +905,7 @@ def original_source_pose_observer(sm, cp, collector, now_ns, *, distinguish_pend
       # clocks; this is NEVER a new physical sample or a current-fit grant.
       waiting = queue[0] if queue else None
       return PendingPhysical(pose_ns if waiting is None else waiting.mono_ns,
-        int(sm.recv_time['deviceMotion'] * 1e9) if waiting is None else waiting.received_ns, context_changed)
+        int(round(sm.recv_time['deviceMotion'] * 1e9)) if waiting is None else waiting.received_ns, context_changed)
     return None
   except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
     return reject('source_observation_exception')
