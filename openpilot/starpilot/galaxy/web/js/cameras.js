@@ -162,7 +162,6 @@ export class LiveCameraPreview {
     this.refresh()
   }
   refresh() {
-    if (bluetoothConnection()) return
     this.warming = true
     this.lastError = ""
     this.publish({ cameraWarming: true, cameraError: "" })
