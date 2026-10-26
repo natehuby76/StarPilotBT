@@ -92,7 +92,7 @@ def test_sign_heading_identifies_the_displayed_source(profile, pending, vienna, 
     pending_speed_limit_mps=current.speed_limit.pending_speed_limit_mps if pending else None))
   font = fonts(profile)
   SpeedLimitWidget(font, profile).render(current)
-  expected = [heading, '50'] if vienna else [heading, 'LIMIT', '50']
+  expected = [heading, '50']
   assert [call.args[0] for call in font.draw.call_args_list] == expected + (['+5'] if offset else [])
   if vienna:
     assert rgba_tuple(font.draw.call_args_list[0].args[-1]) == (0, 0, 0, 255)
@@ -110,7 +110,7 @@ def test_compact_sign_omits_missing_zero_and_rounded_zero_offsets(metric, vienna
   assert resolve_unified_speed(current).offset_text is None
   font = fonts(Profile.COMPACT)
   CompactHudRenderer(font, Mock())._speed_limit_sign(current)
-  assert [call.args[0] for call in font.draw.call_args_list] == (['OSM', '65'] if vienna else ['OSM', 'LIMIT', '65'])
+  assert [call.args[0] for call in font.draw.call_args_list] == ['OSM', '65']
 
 
 @pytest.mark.parametrize('profile', list(Profile))
@@ -132,8 +132,8 @@ def test_pending_sign_pulses_in_place_and_arrow_follows_vehicle_speed(profile, v
     assert rgba_tuple(drawing['circle'].call_args.args[-1]) == (170, 115, 235, 255)
   else:
     assert rgba_tuple(after['50'][-1]) == (170, 115, 235, 255)
-    assert rgba_tuple(before['LIMIT'][-1]) == (244, 247, 245, 255)
-    assert rgba_tuple(after['LIMIT'][-1]) == (170, 115, 235, 255)
+    assert rgba_tuple(before['OSM'][-1]) == (244, 247, 245, 255)
+    assert rgba_tuple(after['OSM'][-1]) == (170, 115, 235, 255)
   assert drawing['arrow'].call_args.args[3] == 1
 
 
@@ -155,7 +155,7 @@ def test_sign_text_stays_centered_without_an_arrow(profile, vienna, reason, draw
   for call in font.draw.call_args_list:
     text, role, size, x, _, _ = call.args
     left, right = font.horizontal_ink(text, role, size)
-    assert x + (left + right) / 2 == (389 if profile == Profile.COMPACT else 345.75)
+    assert abs(x + (left + right) / 2 - (389 if profile == Profile.COMPACT else 345.75)) <= .5
 
 
 @pytest.mark.parametrize('profile', list(Profile))

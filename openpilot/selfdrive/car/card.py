@@ -1470,7 +1470,7 @@ class Car:
     from opendbc.car.hyundai.ev6_startup import EV6Startup, required
     from opendbc.car.hyundai.ecu_startup import Outcome
     owner = getattr(getattr(self, 'vehicle_startup', None), 'owner', None)
-    return (isinstance(owner, EV6Startup) and owner.outcome is Outcome.SENT_UNCONFIRMED and
+    return (isinstance(owner, EV6Startup) and owner.outcome in (Outcome.PENDING, Outcome.SENT_UNCONFIRMED) and
             owner.ready and owner.published and owner.ci is self.CI and not owner.closed and
             required(self.CP))
 
@@ -1483,6 +1483,14 @@ class Car:
     return (isinstance(owner, G90Startup) and owner.outcome in (Outcome.PENDING, Outcome.SENT_UNCONFIRMED) and
             owner.ready and owner.published and owner.ci is self.CI and not owner.closed and
             (qualified(self.CP) or legacy_qualified(self.CP)))
+
+  def torque_ev_startup_keepalive(self):
+    from opendbc.car.hyundai.torque_ev_startup import TorqueEVStartup, required
+    from opendbc.car.hyundai.ecu_startup import Outcome
+    owner = getattr(getattr(self, 'vehicle_startup', None), 'owner', None)
+    return (isinstance(owner, TorqueEVStartup) and owner.outcome in (Outcome.PENDING, Outcome.SENT_UNCONFIRMED) and
+            owner.ready and owner.published and owner.ci is self.CI and not owner.closed and
+            required(self.CP))
 
   def mixed_startup_keepalive(self):
     from opendbc.car.hyundai.blended_longitudinal import BlendedStartup
@@ -1512,7 +1520,7 @@ class Car:
 
     if initialize_only:
       ev6_startup = self.ev6_startup_keepalive()
-      classic_startup = self.classic_startup_keepalive()
+      classic_startup = self.classic_startup_keepalive() or self.torque_ev_startup_keepalive()
       mixed_startup = self.mixed_startup_keepalive()
       now_ns = time.monotonic_ns()
       source_ns = int(self.sm.logMonoTime['carControl'])
@@ -1558,9 +1566,11 @@ class Car:
         return
       mixed = self.vehicle_startup.owner if self.mixed_startup_keepalive() else None
       from opendbc.car.hyundai.g90_startup import G90Startup
+      from opendbc.car.hyundai.torque_ev_startup import TorqueEVStartup
+      from opendbc.car.hyundai.ev6_startup import EV6Startup
       from opendbc.car.hyundai.ecu_startup import Outcome
       classic = self.vehicle_startup.owner
-      if isinstance(classic, G90Startup) and classic.outcome is Outcome.PENDING:
+      if isinstance(classic, (G90Startup, TorqueEVStartup, EV6Startup)) and classic.outcome is Outcome.PENDING:
         now = time.monotonic_ns()
         source = int(self.sm.logMonoTime['carControl'])
         receipt = int(self.sm.recv_time['carControl'] * 1e9)
@@ -1748,11 +1758,11 @@ class Car:
     if not self.CP.passive and initialized:
       self.controls_update(CS, self.sm['carControl'])
     elif ((not self.ci_initialized or self.volt_startup_keepalive() or self.ev6_startup_keepalive() or
-           self.classic_startup_keepalive() or self.mixed_startup_keepalive()) and
+           self.classic_startup_keepalive() or self.torque_ev_startup_keepalive() or self.mixed_startup_keepalive()) and
           self.sm.seen['onroadEvents'] and
           any(e.name == EventName.selfdriveInitializing for e in self.sm['onroadEvents']) and
           ((self.aol_replay and native_bootstrap_supported(self.CP)) or self.ev6_startup_keepalive() or
-           self.classic_startup_keepalive() or self.mixed_startup_keepalive())):
+           self.classic_startup_keepalive() or self.torque_ev_startup_keepalive() or self.mixed_startup_keepalive())):
       self.controls_update(CS, self.sm['carControl'], initialize_only=True)
 
     radar_can = self._deferred_radar_can

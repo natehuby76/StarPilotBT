@@ -37,6 +37,12 @@ def ioniq_candidate(*, alternate=False):
   return stock, build_ioniq6_hda2_long_candidate(stock, fingerprint)
 
 
+def known_body_fixture():
+  # Documented pre-facelift body bounds for control-path tests. This injects a
+  # known body; it does not certify a production VIN or firmware/body mapping.
+  return mock.patch.object(HyundaiCarInterface, 'get_lateral_body_dimensions', create=True, return_value=(1.88, 4.855))
+
+
 class Frame:
   def __init__(self, now_ns):
     self.logMonoTime = dict.fromkeys(LaneCenteringHost.REQUIRED, now_ns)
@@ -71,7 +77,7 @@ def publish_corolla_params(params):
 
 def feed(controls, timestamp, tick, *, active=True, enabled=True, fault=False, override=False, signal=False, model_age=0,
          can_valid=True, can_timeout=False, aol_lat_only=False, native_session='lane-aol-session', speed=20.,
-         drive_id=500_000_000, native_allowed=True, independent=False):
+         drive_id=500_000_000, native_allowed=True, independent=False, delay_fast=False):
   events = []
 
   def msg(service, size=None):
@@ -97,7 +103,8 @@ def feed(controls, timestamp, tick, *, active=True, enabled=True, fault=False, o
     lp = msg('vehicleParameters')
     lp.stiffnessFactor, lp.steerRatio = 1.0, controls.CP.steerRatio
   msg('longitudinalPlan').aTarget = 0.5
-  msg('lateralDelay').lateralDelay = 0.1
+  if tick % 25 == 0 or delay_fast:
+    msg('lateralDelay').lateralDelay = 0.1
   msg('onroadEvents', 0)
   if tick % 5 == 0:
     event = messaging.new_message('modelV2', valid=True, logMonoTime=timestamp - model_age)
@@ -135,6 +142,132 @@ def feed(controls, timestamp, tick, *, active=True, enabled=True, fault=False, o
 
 
 class LaneRuntimeTests(unittest.TestCase):
+  def test_unqualified_body_through_actual_controls_preserves_nominal_native_output(self):
+    for identity in ('absent', 'manual', 'unknown_firmware', 'mismatched_firmware'):
+      with self.subTest(identity=identity), OpenpilotPrefix(), \
+           mock.patch.dict(os.environ, {'LANE_CENTERING_REPLAY_RUNTIME': '0', 'REPLAY': '1', 'AOL_REPLAY_RUNTIME': '0'}), \
+           mock.patch('openpilot.selfdrive.controls.controlsd.messaging.PubMaster'):
+        params = Params()
+        _, cp = ioniq_candidate()
+        if identity == 'manual':
+          cp.fingerprintSource = 'fixed'
+        elif identity in ('unknown_firmware', 'mismatched_firmware'):
+          cp.fingerprintSource = 'fw'
+          firmware = [{'ecu': 'fwdCamera', 'address': 0x7c4, 'brand': 'hyundai', 'fwVersion': b'UNQUALIFIED'}]
+          if identity == 'mismatched_firmware':
+            firmware.append({'ecu': 'fwdRadar', 'address': 0x7d0, 'brand': 'hyundai',
+                             'fwVersion': b'\xf1\x00CE__ RDR -----      1.00 1.01 99110-KL000         '})
+          cp.carFw = firmware
+        params.put('CarParams', cp.to_bytes(), block=True)
+        params.put_bool('LaneCentering', True, block=True)
+        params.put('LaneCenteringE2EAuthority', 0., block=True)
+        baseline, candidate = Controls(), Controls()
+        baseline.lane_centering_host = None
+        for tick in range(40):
+          now = 2_000_000_000 + tick * 10_000_000
+          feed(baseline, now, tick)
+          feed(candidate, now, tick)
+          reference, _ = baseline.state_control()
+          command, _ = candidate.state_control()
+          self.assertEqual((command.latActive, command.longActive), (reference.latActive, reference.longActive))
+          self.assertEqual(command.actuators.to_dict(), reference.actuators.to_dict())
+          self.assertEqual(candidate.desired_curvature, baseline.desired_curvature)
+          self.assertEqual(candidate.lane_centering_applied, 0.)
+        self.assertTrue(command.latActive)
+        self.assertNotEqual(candidate.desired_curvature, 0.)
+        self.assertTrue(candidate.lane_centering_controller._body_required)
+        self.assertIsNone(candidate.lane_centering_controller._body)
+        self.assertEqual(candidate.last_lane_centering_result.reason, 'unqualified_body')
+        self.assertEqual(candidate.last_lane_centering_result.correction, 0.)
+        self.assertIsNone(candidate.lane_centering_controller._tracker.path)
+
+
+  def test_shared_platform_requires_verified_body_without_retuning_geometry(self):
+    from openpilot.starpilot.lateral.lane_clearance import body_dimensions_required, interface_dimensions
+    stock, tagged = ioniq_candidate()
+    for cp in (stock, tagged):
+      before = cp.to_dict()
+      self.assertTrue(body_dimensions_required(HyundaiCarInterface, cp))
+      self.assertIsNone(interface_dimensions(HyundaiCarInterface, cp))
+      self.assertEqual(cp.to_dict(), before)
+      other = cp.as_reader().as_builder()
+      other.carFingerprint = HyundaiCAR.HYUNDAI_IONIQ_5
+      self.assertFalse(body_dimensions_required(HyundaiCarInterface, other))
+      self.assertIsNone(interface_dimensions(HyundaiCarInterface, other))
+    self.assertFalse(body_dimensions_required(HondaCarInterface, stock))
+    self.assertIsNone(interface_dimensions(HondaCarInterface, stock))
+
+
+  def test_shared_feed_is_one_current_batch_and_delay_qualifies_at_real_rate(self):
+    with OpenpilotPrefix(), mock.patch.dict(os.environ, {'REPLAY': '1', 'SIMULATION': '0'}), \
+         mock.patch('openpilot.selfdrive.controls.controlsd.messaging.PubMaster'):
+      params = Params()
+      _, tagged = ioniq_candidate()
+      params.put('CarParams', tagged.to_bytes(), block=True)
+      controls = Controls()
+      now = 2_000_000_000
+      batches = []
+      with mock.patch.object(controls.sm, 'update_msgs', side_effect=lambda stamp, rows: batches.append((stamp, rows))):
+        feed(controls, now, 0)
+      self.assertEqual(len(batches), 1)
+      self.assertEqual(batches[0][0], now / 1e9)
+      delays = [row for row in batches[0][1] if row.which() == 'lateralDelay']
+      self.assertEqual([row.logMonoTime for row in delays], [now])
+      before = controls.sm.frame
+      controls.sm.update_msgs(*batches[0])
+      self.assertEqual(controls.sm.frame, before + 1)
+      self.assertEqual(controls.sm.freq_tracker['lateralDelay'].avg_dt.count, 0)
+      self.assertFalse(controls.sm.all_checks(['lateralDelay']))
+      for tick in range(1, 26):
+        before = controls.sm.frame
+        feed(controls, now + tick * 10_000_000, tick)
+        self.assertEqual(controls.sm.frame, before + 1)
+        if tick < 25:
+          self.assertFalse(controls.sm.all_checks(['lateralDelay']))
+      self.assertEqual(controls.sm.freq_tracker['lateralDelay'].avg_dt.get_average(), .25)
+      self.assertTrue(controls.sm.all_checks(['lateralDelay']))
+      for tick in range(26, 31):
+        feed(controls, now + tick * 10_000_000, tick, delay_fast=True)
+      self.assertFalse(controls.sm.all_checks(['lateralDelay']))
+
+
+  def test_body_guard_rejects_incorrect_delay_rate_with_lateral_axis_still_active(self):
+    with OpenpilotPrefix(), known_body_fixture(), mock.patch.dict(os.environ, {'LANE_CENTERING_REPLAY_RUNTIME': '0', 'REPLAY': '1',
+                                                         'AOL_REPLAY_RUNTIME': '0'}), \
+         mock.patch('openpilot.selfdrive.controls.controlsd.messaging.PubMaster'):
+      params = Params()
+      _, tagged = ioniq_candidate()
+      params.put('CarParams', tagged.to_bytes(), block=True)
+      params.put_bool('LaneCentering', True, block=True)
+      params.put('LaneCenteringE2EAuthority', 0., block=True)
+      controls = Controls()
+      for tick in range(35):
+        feed(controls, 2_000_000_000 + tick * 10_000_000, tick)
+        command, _ = controls.state_control()
+      self.assertTrue(command.latActive)
+      self.assertGreater(controls.last_lane_centering_result.correction, 0.)
+      for tick in range(35, 45):
+        feed(controls, 2_000_000_000 + tick * 10_000_000, tick, delay_fast=True)
+        command, _ = controls.state_control()
+      self.assertTrue(command.latActive)
+      self.assertFalse(controls.sm.all_checks(['lateralDelay']))
+      self.assertEqual(controls.last_lane_centering_result.correction, 0.)
+      self.assertEqual(controls.lane_centering_applied, 0.)
+
+  def test_clearance_delay_uses_original_header_and_rejects_stale_or_future_source(self):
+    from openpilot.starpilot.lateral.lane_clearance import current_delay
+    frame = SimpleNamespace(logMonoTime={'lateralDelay':1_000_000_000}, all_checks=lambda services:True)
+    class Source:
+      logMonoTime = frame.logMonoTime
+      all_checks = staticmethod(frame.all_checks)
+      def __getitem__(self, service):
+        return SimpleNamespace(lateralDelay=.1)
+    source = Source()
+    self.assertEqual(current_delay(source, 1_250_000_000), .1)
+    self.assertIsNone(current_delay(source, 1_626_000_000))
+    self.assertIsNone(current_delay(source, 999_999_999))
+    self.assertEqual(source.logMonoTime['lateralDelay'], 1_000_000_000)
+
   def test_steering_pause_original_timing_source_loss_and_units(self):
     from openpilot.starpilot.lateral.pause import LateralPause, PauseSettings, read_settings as read_pause
     state = SimpleNamespace(vEgo=0., leftBlinker=True, rightBlinker=False, canValid=True, canTimeout=False)
@@ -336,7 +469,7 @@ class LaneRuntimeTests(unittest.TestCase):
         self.assertTrue(runtime_supported(tagged))
 
   def test_actual_tagged_ioniq_saved_host_uses_fresh_lateral_authority(self):
-    with OpenpilotPrefix(), mock.patch.dict(os.environ, {'LANE_CENTERING_REPLAY_RUNTIME': '0', 'REPLAY': '1',
+    with OpenpilotPrefix(), known_body_fixture(), mock.patch.dict(os.environ, {'LANE_CENTERING_REPLAY_RUNTIME': '0', 'REPLAY': '1',
                                                          'AOL_REPLAY_RUNTIME': '0'}), \
          mock.patch('openpilot.selfdrive.controls.controlsd.messaging.PubMaster'):
       params = Params()
@@ -350,6 +483,8 @@ class LaneRuntimeTests(unittest.TestCase):
                                                          lateral_active=True, longitudinal_active=False))
       params.put_bool('LaneCentering', True, block=True)
       controls = disabled
+      self.assertEqual(controls.lane_centering_controller._body.width, 1.88)
+      self.assertEqual(controls.lane_centering_controller._body.length, 4.855)
       self.assertIsNotNone(controls.lane_centering_host)
       for tick in range(35):
         now = 2_000_000_000 + tick * 10_000_000
@@ -370,7 +505,7 @@ class LaneRuntimeTests(unittest.TestCase):
       self.assertIsNotNone(Controls().lane_centering_host)
 
   def test_tagged_ioniq_four_axes_and_stale_reset(self):
-    with OpenpilotPrefix(), mock.patch.dict(os.environ, {'LANE_CENTERING_REPLAY_RUNTIME': '0', 'REPLAY': '1',
+    with OpenpilotPrefix(), known_body_fixture(), mock.patch.dict(os.environ, {'LANE_CENTERING_REPLAY_RUNTIME': '0', 'REPLAY': '1',
                                                          'AOL_REPLAY_RUNTIME': '0'}), \
          mock.patch('openpilot.selfdrive.controls.controlsd.messaging.PubMaster'):
       params = Params()
@@ -379,6 +514,10 @@ class LaneRuntimeTests(unittest.TestCase):
       params.put_bool('LaneCentering', True, block=True)
       params.put('LaneCenteringE2EAuthority', 0.0, block=True)
       controls = Controls()
+      # This qualified-axis test also explicitly primes the 4 Hz delay source.
+      initial = messaging.new_message('lateralDelay', valid=True, logMonoTime=750_000_000)
+      initial.lateralDelay.lateralDelay = .1
+      controls.sm.update_msgs(.75, [initial.as_reader()])
       self.assertIsNotNone(controls.lane_centering_host)
       # Inject already-qualified independent-axis results at the consumer seam;
       # AOL's native/session checks are covered by its own wire tests.

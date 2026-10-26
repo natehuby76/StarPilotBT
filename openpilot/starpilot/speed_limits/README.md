@@ -26,7 +26,10 @@ the offset fits inside the fixed sign height on both screens.
 Both sign styles identify the displayed source: DASH for Dashboard, OSM for offline
 Maps, and VISION for the vision model. Explicit Mapbox readings in historical
 replay use NAV; unidentified sources keep SPEED. Retained readings use LAST.
-Vienna signs place this label above the number, beside any pending arrow.
+Both styles place only this source above the number, beside any pending arrow.
+The source and arrow share a centered row; all sign contents use the same geometry
+on both screens. Small arrows are baked at double resolution and text is aligned
+to final pixels for clear native rendering.
 Steering-wheel + accepts and − declines. Tapping the sign opens the same
 Accept / Decline choices on either native screen. A pending manual choice expires
 after ten monotonic seconds, including time without active longitudinal control.

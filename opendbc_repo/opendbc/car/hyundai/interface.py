@@ -34,6 +34,11 @@ class CarInterface(CarInterfaceBase):
   RadarInterface = RadarInterface
 
   @staticmethod
+  def requires_lateral_body_dimensions(cp):
+    # The shared platform identifier does not establish a body/camera envelope.
+    return cp.carFingerprint == CAR.HYUNDAI_IONIQ_6
+
+  @staticmethod
   def startup_required(cp):
     from opendbc.car.hyundai.g90_startup import required
     from opendbc.car.hyundai.ev6_startup import required as ev6_required

@@ -493,9 +493,12 @@ class LiveTrackingOptimizer:
     # Retain only inert numerical study intent on missing/stale evidence. The
     # command still rolls back; a fresh baseline ACK must precede a NEW wire
     # trial. Completed scores, alpha and original deadline are never reset.
+    # Normalized source timing gaps reject the pair without changing identity.
+    # Wrong domains still arrive with context_changed=True and discard intent.
     transient = not context_changed and reason in (
       'acknowledged_trial_profile_withdrawn', 'expired_response_witness', 'stale_control', 'stale_applied_output',
-      'current_evidence_delayed', 'learning_evidence_delayed',
+      'current_evidence_delayed', 'learning_evidence_delayed', 'consumed_source_mismatch',
+      'consumer_pending_trial_interrupted',
       'fresh_physical_residual_window_required',
     )
     if not transient:
@@ -735,9 +738,12 @@ class LiveTrackingOptimizer:
         # that maneuver ends. Three unmatched whole windows release it by
         # source time alone, without inspecting any tracking outcomes. No
         # incomplete comparison can confirm or persist a target.
+        # Before launch, source-only discovery follows the current input regime.
+        # Waiting three unmatched windows also suppresses native discovery
+        # throughout a new short curve. No live trial or scored row is accepted.
         last_match = self.comparison[-1].end_ns if self.comparison else self.discovery['selected_end_ns']
         if (not _matches(self.discovery['anchor'], episode)
-            and episode.end_ns - last_match >= 3 * (episode.end_ns - episode.start_ns)):
+            and (self.rmse is None or episode.end_ns - last_match >= 3 * (episode.end_ns - episode.start_ns))):
           self._discard_selector()
       if self.discovery is not None:
         discovery = self.discovery
@@ -1038,13 +1044,22 @@ class LiveTrackingOptimizer:
               for old_name, old_direction, old_profile, demand, old_end in self.closed_loop_worse
             )
 
+          # Without a fitted plant, the secant sign is only an experiment
+          # preference. At a hard bound it must not veto the feasible direction.
+          # Actual worse/inconclusive directions below remain disqualified;
+          # independent baseline, later feedback and slew are unchanged.
+          low, high = coordinate_bounds(name)
+          step_limit = MAX_STEP if self.rmse is None else min(MAX_STEP, 0.1 * confidence)
+          if self.rmse is None and min(high, max(low, self.accepted[name] + sign * step_limit)) == self.accepted[name]:
+            sign = -sign
+
           if observed_worse(sign):
             if observed_worse(-sign):
               continue  # Both directions failed; do not oscillate guesses.
             sign = -sign
           if self.rmse is None and self._same_inconclusive_trial(name, sign, rows[-1], now_ns):
             continue
-          delta = sign * min(MAX_STEP, 0.1 * confidence)
+          delta = sign * step_limit
           predicted = min(features[id(row)][name].max_step_physical_rms for row in rows)
           expected = predicted * abs(delta) / MAX_STEP / max(_score_scale(row) for row in rows)
           if expected <= 0.0001:

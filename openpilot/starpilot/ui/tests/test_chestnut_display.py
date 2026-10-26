@@ -111,7 +111,8 @@ def test_offroad_selection_rechecks_without_a_ui_restart():
 @pytest.fixture(params=[1, 3])
 def source(request, monkeypatch):
   monkeypatch.setattr(model_source.gui_app, 'texture', lambda path, width, height: SimpleNamespace(path=path, width=width, height=height))
-  ui = SimpleNamespace(started_frame=10, chestnut_state=ChestnutState.LOADING, chestnut_loading=False, chestnut_active=False)
+  ui = SimpleNamespace(started_frame=10, chestnut_present=True, chestnut_output_seen=False, chestnut_state=ChestnutState.LOADING,
+                       chestnut_loading=False, chestnut_active=False, replay_clock=None)
   ui.sm = Mock(recv_frame={'carState': 12, 'modelV2': 12})
   ui.sm.__getitem__ = Mock(return_value=SimpleNamespace(enabled=False))
   clock, draw = Mock(return_value=10.), Mock()
@@ -190,6 +191,133 @@ def test_shared_gpu_marks_small_model_on_engagement(source, recv_frame, loading,
   assert source.widget._small_model_engaged is expected
 
 
+@pytest.mark.parametrize('present,detected', [(False, False), (True, True), (True, False)])
+@pytest.mark.parametrize('active', [False, None])
+def test_gpu_fallback_on_engagement_requires_chestnut_for_this_drive(source, present, detected, active):
+  ui = source.ui
+  ui.started, ui.replay_clock = True, None
+  ui.chestnut_present, ui.chestnut_output_seen, ui.chestnut_active = present, present, active
+  ui.sm.__getitem__.return_value = SimpleNamespace(chestnutPresent=detected, enabled=False, big=False)
+  ui.sm.logMonoTime = {'modelV2': 1_000_000_000}
+  ui.sm.valid = ui.sm.alive = {'modelV2': True}
+  with patch('openpilot.selfdrive.ui.ui_state.time.monotonic_ns', return_value=1_100_000_000):
+    UIState._update_chestnut_state(ui)
+  assert ui.chestnut_state == (ChestnutState.FAILED if present else ChestnutState.DISCONNECTED)
+  assert ui.chestnut_present is present
+  for now, engaged in ((10., False), (14., True), (18., False), (22., True)):
+    source.clock.return_value = now
+    ui.sm.__getitem__.return_value.enabled = engaged
+    source.draw.reset_mock()
+    source.widget._update_state()
+    source.widget._render(rl.Rectangle(30, 30, 2100, 1020))
+    if not present:
+      source.draw.assert_not_called()
+    elif engaged:
+      assert source.draw.call_args.args[0] is source.widget._fallback
+
+
+def test_gpu_fallback_clears_before_next_drive_without_chestnut(source):
+  source.ui.chestnut_state = ChestnutState.FAILED
+  source.ui.chestnut_output_seen = True
+  source.ui.sm.__getitem__.return_value.enabled = True
+  rect = rl.Rectangle(30, 30, 2100, 1020)
+  source.widget._update_state()
+  source.widget._render(rect)
+  assert source.draw.call_args.args[0] is source.widget._fallback
+  source.ui.chestnut_present = False
+  source.ui.chestnut_output_seen = False
+  source.ui.chestnut_state = ChestnutState.DISCONNECTED
+  source.ui.started_frame = 20
+  source.ui.sm.recv_frame = {'carState': 22, 'modelV2': 22}
+  for now, engaged in ((20., False), (24., True)):
+    source.clock.return_value = now
+    source.ui.sm.__getitem__.return_value.enabled = engaged
+    source.draw.reset_mock()
+    source.widget._update_state()
+    source.widget._render(rect)
+    source.draw.assert_not_called()
+  source.ui.chestnut_present = True
+  source.ui.chestnut_state = ChestnutState.FAILED
+  source.ui.started_frame = 30
+  source.ui.sm.recv_frame = {'carState': 32, 'modelV2': 32}
+  for now, engaged, icon in ((30., False, '_failed'), (34., True, '_fallback')):
+    source.clock.return_value = now
+    source.ui.sm.__getitem__.return_value.enabled = engaged
+    source.draw.reset_mock()
+    source.widget._update_state()
+    source.widget._render(rect)
+    assert source.draw.call_args.args[0] is getattr(source.widget, icon)
+
+
+@pytest.mark.parametrize('replay', [False, True])
+@pytest.mark.parametrize('initial', [ChestnutState.LOADING, ChestnutState.ACTIVE])
+def test_gpu_disconnect_warning_survives_lost_presence_during_same_drive(source, replay, initial):
+  ui = source.ui
+  ui.started, ui.replay_clock = True, object() if replay else None
+  ui.replay_sample = SimpleNamespace(valid=True, now_ns=1_100_000_000)
+  ui.chestnut_output_seen = False
+  ui.chestnut_loading = initial == ChestnutState.LOADING
+  ui.sm.__getitem__.return_value = SimpleNamespace(chestnutPresent=True, enabled=False, big=initial == ChestnutState.ACTIVE)
+  ui.sm.logMonoTime = {'modelV2': 1_000_000_000}
+  ui.sm.valid = {'modelV2': initial == ChestnutState.ACTIVE}
+  ui.sm.alive = {'modelV2': True}
+  rect = rl.Rectangle(30, 30, 2100, 1020)
+  with patch('openpilot.selfdrive.ui.ui_state.time.monotonic_ns', return_value=1_100_000_000):
+    UIState._update_chestnut_state(ui)
+    assert ui.chestnut_state == initial
+    source.widget._update_state()
+    source.widget._render(rect)
+    ui.sm.__getitem__.return_value = SimpleNamespace(chestnutPresent=False, enabled=True, big=False)
+    ui.sm.valid['modelV2'] = True
+    ui.chestnut_loading, ui.chestnut_active = False, False
+    UIState._update_chestnut_state(ui)
+  assert ui.chestnut_state == (ChestnutState.DISCONNECTED if replay else ChestnutState.FAILED)
+  source.draw.reset_mock()
+  source.widget._update_state()
+  source.widget._render(rect)
+  assert source.draw.call_args.args[0] is source.widget._fallback
+
+
+@pytest.mark.parametrize('had_gpu', [False, True])
+def test_replay_gpu_fallback_after_returning_to_onroad(source, had_gpu):
+  ui = source.ui
+  ui.started, ui.replay_clock = True, object()
+  ui.chestnut_present = had_gpu
+  ui.replay_sample = SimpleNamespace(valid=True, now_ns=1_100_000_000)
+  ui.sm.logMonoTime = {'modelV2': 1_000_000_000}
+  ui.sm.valid = ui.sm.alive = {'modelV2': True}
+  ui.sm.__getitem__.return_value = SimpleNamespace(chestnutPresent=had_gpu, enabled=False, big=had_gpu)
+  UIState._update_chestnut_state(ui)
+  assert ui.chestnut_state == (ChestnutState.ACTIVE if had_gpu else ChestnutState.DISCONNECTED)
+  assert ui.chestnut_output_seen is had_gpu
+  ui.sm.__getitem__.return_value = SimpleNamespace(chestnutPresent=False, enabled=True, big=False)
+  UIState._update_chestnut_state(ui)
+  assert ui.chestnut_state == ChestnutState.DISCONNECTED
+  assert ui.chestnut_output_seen is had_gpu
+  source.widget._update_state()
+  source.widget._render(rl.Rectangle(30, 30, 2100, 1020))
+  if had_gpu:
+    source.draw.assert_called_once()
+    assert source.draw.call_args.args[0] is source.widget._fallback
+  else:
+    source.draw.assert_not_called()
+
+
+@pytest.mark.parametrize('active', [False, None])
+def test_gpu_output_without_chestnut_does_not_show_live_fallback(source, active):
+  ui = source.ui
+  ui.started, ui.chestnut_present, ui.chestnut_active = True, False, active
+  ui.sm.logMonoTime = {'modelV2': 1_000_000_000}
+  ui.sm.valid = ui.sm.alive = {'modelV2': True}
+  ui.sm.__getitem__.return_value = SimpleNamespace(chestnutPresent=False, enabled=True, big=True)
+  with patch('openpilot.selfdrive.ui.ui_state.time.monotonic_ns', return_value=1_100_000_000):
+    UIState._update_chestnut_state(ui)
+  assert ui.chestnut_state == ChestnutState.DISCONNECTED and ui.chestnut_output_seen
+  source.widget._update_state()
+  source.widget._render(rl.Rectangle(30, 30, 2100, 1020))
+  source.draw.assert_not_called()
+
+
 @pytest.mark.parametrize('width', [1860, 2160])
 def test_large_gpu_layer_uses_centered_right_inset(width):
   from openpilot.selfdrive.ui.onroad.augmented_road_view import AugmentedRoadView as LargeRoadView
@@ -248,3 +376,65 @@ def test_initial_valid_small_output_is_failed_despite_loaded_big_marker():
   with patch('openpilot.selfdrive.ui.ui_state.time.monotonic_ns', return_value=1_100_000_000):
     UIState._update_chestnut_state(state)
   assert state.chestnut_state == ChestnutState.FAILED
+
+
+@pytest.mark.parametrize('phase,started,expected', [
+  ('connecting', False, ChestnutState.LOADING),
+  ('connected', False, ChestnutState.LOADING),
+  ('ready', False, ChestnutState.READY),
+  ('active', False, ChestnutState.READY),
+  ('unavailable', False, ChestnutState.FAILED),
+  ('disconnected', False, ChestnutState.DISCONNECTED),
+  ('connecting', True, ChestnutState.LOADING),
+  ('ready', True, ChestnutState.LOADING),
+  ('active', True, ChestnutState.ACTIVE),
+  ('unavailable', True, ChestnutState.FAILED),
+  ('disconnected', True, ChestnutState.DISCONNECTED),
+])
+def test_jetlink_uses_existing_gpu_feedback(phase, started, expected):
+  from openpilot.starpilot.models.jetlink_status import JetlinkStatus
+  sm = Mock()
+  sm.__getitem__ = Mock(side_effect=lambda service: SimpleNamespace(chestnutPresent=False) if service == 'deviceState' else SimpleNamespace(big=True))
+  sm.recv_frame = {'modelV2': 12}
+  sm.logMonoTime = {'modelV2': 1_000_000_000}
+  sm.valid = {'modelV2': True}
+  sm.alive = {'modelV2': True}
+  feed = Mock()
+  feed.snapshot.return_value = JetlinkStatus('Computer', phase, port='connected')
+  state = Mock(spec=UIState, sm=sm, started=started, started_frame=10, jetlink_status_feed=feed,
+                          chestnut_output_seen=False, chestnut_present=False)
+  with patch('openpilot.selfdrive.ui.ui_state.time.monotonic_ns', return_value=1_100_000_000):
+    UIState._update_chestnut_state(state)
+  assert state.chestnut_state == expected
+
+
+@pytest.mark.parametrize('big,valid,alive,age', [(False, True, True, 100_000_000),
+                                              (True, False, True, 100_000_000),
+                                              (True, True, False, 100_000_000),
+                                              (True, True, True, 300_000_000)])
+def test_jetlink_cannot_keep_green_without_fresh_big_output(big, valid, alive, age):
+  from openpilot.starpilot.models.jetlink_status import JetlinkStatus
+  sm = Mock()
+  sm.__getitem__ = Mock(side_effect=lambda service: SimpleNamespace(chestnutPresent=False) if service == 'deviceState' else SimpleNamespace(big=big))
+  sm.recv_frame = {'modelV2': 12}
+  sm.logMonoTime = {'modelV2': 1_000_000_000}
+  sm.valid = {'modelV2': valid}
+  sm.alive = {'modelV2': alive}
+  feed = Mock()
+  feed.snapshot.return_value = JetlinkStatus('Computer', 'active', port='connected')
+  state = Mock(spec=UIState, sm=sm, started=True, started_frame=10, jetlink_status_feed=feed,
+                          chestnut_output_seen=True, chestnut_present=True)
+  with patch('openpilot.selfdrive.ui.ui_state.time.monotonic_ns', return_value=1_000_000_000 + age):
+    UIState._update_chestnut_state(state)
+  assert state.chestnut_state == ChestnutState.FAILED
+
+
+def test_physical_chestnut_keeps_its_own_status_with_jetlink_feed():
+  sm = Mock()
+  sm.__getitem__ = Mock(return_value=SimpleNamespace(chestnutPresent=True))
+  feed = Mock()
+  state = Mock(spec=UIState, sm=sm, started=False, jetlink_status_feed=feed, chestnut_alert=False,
+                          chestnut_checking=False, chestnut_compiled=True)
+  UIState._update_chestnut_state(state)
+  feed.snapshot.assert_not_called()
+  assert state.chestnut_state == ChestnutState.READY

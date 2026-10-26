@@ -231,3 +231,28 @@ def configuration_settings_policy(cp):
       cp.steerControlType == structs.CarParams.SteerControlType.torque):
     return AolVehiclePolicy(settings_supported=True, fixed_cruise_buttons=True, distance_pause_only=True)
   return None
+
+
+def held_lateral_pedal(owner, cs):
+  """An already accepted pedal may retain LAT intent, never stale output."""
+  from math import isfinite
+  from openpilot.starpilot.nostalgia import physical_cancel
+  anchor = getattr(owner, 'aol_ordinary_source_anchor', None)
+  settings = getattr(owner, 'aol_settings', None)
+  if not qualified(owner.CP, marked_only=True) or anchor is None:
+    return False
+  proof, native, accepted, _, state = anchor
+  return bool(cs is state and not getattr(owner, 'car_state_samples', ()) and
+    proof[8] and not proof[9] and not owner.enabled and not owner.active and
+    native is not None and native.requestedLateral and native.lateralAllowed and
+    not native.requestedLongitudinal and not native.longitudinalAllowed and
+    accepted is not None and accepted.allowedLatch and accepted.lateralArmed and
+    accepted.settingsQualified and not accepted.pauseLateral and not accepted.pauseLongitudinal and
+    settings is not None and settings.enabled and
+    not getattr(owner, 'aol_dm_lateral_inhibit', False) and
+    cs.brakePressed != cs.gasPressed and not cs.regenBraking and
+    cs.cruiseState.available and not cs.cruiseState.enabled and
+    cs.gearShifter == structs.CarState.GearShifter.drive and
+    isfinite(cs.vEgoRaw) and isfinite(cs.vEgo) and
+    (not cs.brakePressed or cs.standstill or cs.vEgo >= settings.pause_brake_mps) and
+    not cs.seatbeltUnlatched and not physical_cancel(cs, owner.CP))

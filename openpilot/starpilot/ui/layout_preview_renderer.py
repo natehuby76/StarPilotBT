@@ -344,6 +344,8 @@ class _Canvas:
       crop_y = max(0, math.floor(position['y'] - widget.get('visualInsetTop', 0)))
       offset_x, offset_y = crop_x - position['x'], crop_y - position['y']
       width, height = math.ceil(logical_width - offset_x), math.ceil(logical_height - offset_y)
+      if self.profile == Profile.COMPACT and key == 'speed_limit' and 0 <= crop_y < canvas_height:
+        height = min(height, canvas_height - crop_y)
       if x + width > 1024:
         x, y, row_height = 0, y + row_height, 0
       sprites[key] = {'x': x, 'y': y, 'width': width, 'height': height, 'offsetX': offset_x, 'offsetY': offset_y}

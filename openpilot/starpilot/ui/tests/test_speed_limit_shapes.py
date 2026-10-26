@@ -81,10 +81,20 @@ def test_large_sign_scale_changes_destination_and_rotation_origin_only(gpu):
   owner = shapes.SpeedLimitShapes(1.25)
   owner.arrow('compact', 345.75, 111.25, -1, shapes.rl.BLACK)
   _, source, destination, origin, rotation, _ = gpu['draw_texture_pro'].call_args.args
-  assert (source.width, source.height) == (16, 24)
+  assert (source.width, source.height) == (32, 48)
   assert (destination.x, destination.y, destination.width, destination.height) == (345.75, 111.25, 20, 30)
   assert (origin.x, origin.y, rotation) == (10, 15, 180)
   owner.close()
+
+
+def test_small_arrow_has_larger_ink_at_double_density():
+  x, y, width, height = shapes.SPRITES['arrow_compact']
+  with Image.open(shapes.ATLAS_PATH) as atlas:
+    bounds = atlas.crop((x, y, x+width, y+height)).getchannel('A').point(lambda alpha: 255 if alpha > 40 else 0).getbbox()
+  density = shapes.SPRITE_DENSITIES['arrow_compact']
+  assert density == 2
+  assert bounds is not None
+  assert ((bounds[2]-bounds[0])/density, (bounds[3]-bounds[1])/density) == (12, 16)
 
 
 def test_texture_setup_failure_releases_both_resources(gpu):
@@ -102,3 +112,19 @@ def test_headless_context_loads_atlas_without_a_window(gpu, monkeypatch):
   owner = shapes.SpeedLimitShapes(headless_context=True)
   owner.circle(0, 0, shapes.rl.RED)
   gpu['load_texture_from_image'].assert_called_once()
+
+
+def test_short_outline_reuses_the_same_atlas_and_preserves_corner_scale(gpu):
+  owner = shapes.SpeedLimitShapes()
+  owner.outline(59, 58, shapes.rl.WHITE, short=True)
+  assert gpu['draw_texture_pro'].call_count == 2
+  rows = [call.args for call in gpu['draw_texture_pro'].call_args_list]
+  assert [(r[1].x, r[1].y, r[1].width, r[1].height) for r in rows] == [(256, 0, 128, 64), (256, 80, 128, 64)]
+  assert [(r[2].x, r[2].y, r[2].width, r[2].height) for r in rows] == [(59, -6, 128, 64), (59, 58, 128, 64)]
+  assert all((r[3].x, r[3].y) == (64, 0) for r in rows)
+  owner.outline(59, 66, shapes.rl.WHITE)
+  owner.outline(59, 58, shapes.rl.WHITE, short=True)
+  gpu['load_image'].assert_called_once()
+  gpu['load_texture_from_image'].assert_called_once()
+  owner.close()
+  gpu['unload_texture'].assert_called_once()

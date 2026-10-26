@@ -135,6 +135,9 @@ class FordCardIntent(AolCardIntent):
     if self.auto_main and not available:
       self.allowed_latch = False
     state.buttonEvents = events
+    if self.auto_main and self.main_pulse:
+      # Automatic MAIN-on arms AOL even if ordinary cruise engaged first.
+      kwargs['standard_enabled'] = False
     super().update(state.as_reader(), **kwargs)
 
 

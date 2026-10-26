@@ -47,6 +47,15 @@ class _SourceDelivery:
     return header
 
 
+def source_receiver(services):
+  # Full-rate control/application tapes are drained separately. This optional
+  # process conflates CarState, so its receive count cannot measure the 100Hz
+  # publisher rate while it processes a batch. Keep the actual envelope,
+  # source-age, state-bracket and native checks; do not fabricate freq_ok.
+  return messaging.SubMaster(services, poll='carState', ignore_alive=['aolSafetyWire'],
+    ignore_valid=['aolSafetyWire'], ignore_avg_freq=['aolSafetyWire', 'carState'])
+
+
 MAX_OBJECTIVES = 12
 MAX_CACHED_PROFILES = 14  # Six FF cells and four independently qualified centre speed bands.
 
@@ -552,6 +561,11 @@ def run(
               from openpilot.starpilot.flm.source_plant_runtime import start_original_capture
               if not start_original_capture(collector):
                 unavailable_reason = adapter.source_plant_capture_error
+                if live_actor is not None:
+                  # Preserve the actual startup refusal instead of the previous identity-reset status.
+                  live_actor.reason = unavailable_reason
+                  from openpilot.starpilot.flm.source_stall_log import log_source_stall
+                  log_source_stall(live_actor, collector, now_ns=received_now, bootstrap_allowed=True)
                 collector = None
                 return
           else:
@@ -932,7 +946,7 @@ def main():
     'onroadEvents',
     'aolSafetyWire',
   ]
-  sm = messaging.SubMaster(services, poll='carState', ignore_alive=['aolSafetyWire'], ignore_valid=['aolSafetyWire'], ignore_avg_freq=['aolSafetyWire'])
+  sm = source_receiver(services)
   control_socket = messaging.sub_sock('starpilotLateralState', conflate=False)
   applied_socket = messaging.sub_sock('starpilotCarState', conflate=False)
   pm = messaging.PubMaster(['autoSteeringLearning', 'starpilotSteeringTracking'])

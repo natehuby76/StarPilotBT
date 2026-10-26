@@ -12,6 +12,7 @@ class ModelSource(Widget):
     super().__init__()
     self._engaged = False
     self._small_model_engaged = False
+    self._chestnut_drive_frame: int | None = None
     self._fade_time = 0.0
     self._icon: rl.Texture | None = None
     self._alpha_filter = FirstOrderFilter(0.0, 0.1, 1 / gui_app.target_fps)
@@ -35,7 +36,10 @@ class ModelSource(Widget):
   def _render(self, rect: rl.Rectangle) -> None:
     now = rl.get_time()
     loading = ui_state.chestnut_state == ChestnutState.LOADING
-    self._small_model_engaged &= ui_state.chestnut_state in (ChestnutState.FAILED, ChestnutState.DISCONNECTED)
+    if ui_state.chestnut_present or (ui_state.replay_clock is not None and ui_state.chestnut_output_seen):
+      self._chestnut_drive_frame = ui_state.started_frame
+    self._small_model_engaged &= (self._chestnut_drive_frame == ui_state.started_frame and
+                                 ui_state.chestnut_state in (ChestnutState.FAILED, ChestnutState.DISCONNECTED))
     if loading:
       icon = self._loading
       opacity = 0.35 + 0.65 * (0.5 - 0.5 * math.cos(now * 6.0))

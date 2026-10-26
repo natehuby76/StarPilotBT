@@ -90,62 +90,69 @@ class SpeedLimitWidget:
     secondary = self.pulse.color(rl.Color(223, 232, 227, 255), now)
 
     def ink(text, role, size):
-      return (*self.fonts.horizontal_ink(text, role, size * self.text_scale),
-              *self.fonts.vertical_ink(text, role, size * self.text_scale))
+      return tuple(value / scale for value in (*self.fonts.horizontal_ink(text, role, size * self.text_scale),
+                                               *self.fonts.vertical_ink(text, role, size * self.text_scale)))
 
-    def centered(text, role, size, ink_top, color, center_x=x + 59 * scale):
+    def centered(text, role, size, ink_top, color, center_x=59):
       left, right, a, b = ink(text, role, size)
-      origin = center_x - (left + right) / 2
-      self.fonts.draw(text, role, size * self.text_scale, origin, ink_top - a, color)
-      return origin + left, ink_top, origin + right, ink_top + b - a
+      # Snap only the final draw, after fitting in the shared 118 x 132 geometry.
+      origin = round(x + (center_x - (left + right) / 2) * scale)
+      y = round(top + (ink_top - a) * scale)
+      self.fonts.draw(text, role, size * self.text_scale, origin, y, color)
+      return origin + left * scale, y + a * scale, origin + right * scale, y + b * scale
 
-    if state.appearance.use_vienna_sign:
-      cx, cy = x + 59 * scale, top + 67 * scale
-      black = rl.Color(0, 0, 0, 255)
-      self.shapes.circle(cx, cy, self.pulse.color(rl.Color(201, 34, 49, 255), now))
-      heading_bounds = centered(heading, FontRole.SEMI_BOLD, 16, top + 36 * scale, black,
-                                x + (51 if arrow_direction else 59) * scale)
-      # Preserve the compact no-offset numeral pulse; other pending numerals stay black.
-      pulse_number = self.profile == Profile.COMPACT and not shown.offset_text
-      color = self.pulse.color(black, now) if pulse_number or not pending else black
-      size = (54 if pending and not pulse_number else 58) if len(shown.posted_text) <= 2 else 48
-      number_center = cy + (2 if shown.offset_text else 11) * scale
-      offset_half_width = offset_height = 0
-      if shown.offset_text:
-        left, right, a, b = ink(shown.offset_text, FontRole.MEDIUM, 24)
-        offset_half_width, offset_height = (right - left) / 2, b - a
-      while True:
-        left, right, a, b = ink(shown.posted_text, FontRole.BOLD, size)
-        offset_fits = (not shown.offset_text or offset_half_width ** 2 +
-                       (number_center + (b - a) / 2 + 4 * scale + offset_height - cy) ** 2 <= (47 * scale) ** 2)
-        if (number_center - (b - a) / 2 >= top + 52 * scale and
-            ((right - left) / 2) ** 2 + (abs(number_center - cy) + (b - a) / 2) ** 2 <= (47 * scale) ** 2 and offset_fits) or size <= 32:
-          break
-        size -= 2
-      number_top = number_center - (b - a) / 2
-      number = centered(shown.posted_text, FontRole.BOLD, size, number_top, color)
-      if shown.offset_text:
-        offset_top, size = number[3] + 4 * scale, 36
-        while True:
-          left, right, a, b = ink(shown.offset_text, FontRole.MEDIUM, size)
-          if ((right - left) / 2) ** 2 + max((offset_top - cy) ** 2, (offset_top + b - a - cy) ** 2) <= (47 * scale) ** 2 or size <= 24:
-            break
-          size -= 2
-        centered(shown.offset_text, FontRole.MEDIUM, size, offset_top, color)
+    def circle_fits(left, right, a, b):
+      return all((px - 59) ** 2 + (py - 67) ** 2 <= 46 ** 2
+                 for px in (left, right) for py in (a, b))
+
+    vienna = state.appearance.use_vienna_sign
+    color = rl.Color(0, 0, 0, 255) if vienna else white
+    if vienna:
+      self.shapes.circle(x + 59 * scale, top + 67 * scale, self.pulse.color(rl.Color(201, 34, 49, 255), now))
     else:
       self.shapes.outline(x + 59 * scale, top + 66 * scale, white)
-      for label, y in ((heading, top + 11 * scale), ('LIMIT', top + 27 * scale)):
-        centered(label, FontRole.SEMI_BOLD, 20, y, white, x + (52 if arrow_direction else 59) * scale)
-      number = centered(shown.posted_text, FontRole.BOLD, 58, top + (50 if shown.offset_text else 61) * scale, white)
-      if shown.offset_text:
-        centered(shown.offset_text, FontRole.MEDIUM, 36, top + 98 * scale, secondary)
+
+    left, right, a, b = ink(heading, FontRole.SEMI_BOLD, 18)
+    heading_width = right - left
+    header_y = 47 if vienna else 26
+    # The small arrow's visible ink is 12 x 16, with a six-pixel label gap.
+    header_left = 59 - (heading_width + (18 if arrow_direction else 0)) / 2
+    centered(heading, FontRole.SEMI_BOLD, 18, header_y - (b - a) / 2, color, header_left + heading_width / 2)
     if arrow_direction:
-      ax, ay = ((heading_bounds[2] + 11 * scale, (heading_bounds[1] + heading_bounds[3]) / 2)
-                if state.appearance.use_vienna_sign else (x + 99 * scale, top + 26 * scale))
-      arrow_color = color if state.appearance.use_vienna_sign else white
-      self.shapes.arrow('compact' if state.appearance.use_vienna_sign else 'large', ax, ay, arrow_direction, arrow_color)
+      self.shapes.arrow('compact', round(x + (header_left + heading_width + 12) * scale),
+                        round(top + header_y * scale), arrow_direction, color)
+
+    size = 58 if vienna else 64
+    offset_size = 30 if vienna else 27
+    number_center = (73 if shown.offset_text else 80) if vienna else (67 if shown.offset_text else 81)
+    while True:
+      left, right, a, b = ink(shown.posted_text, FontRole.BOLD, size)
+      width, height = right - left, b - a
+      number_top = number_center - height / 2
+      if vienna:
+        fits = number_top >= 57 and circle_fits(59 - width / 2, 59 + width / 2, number_top, number_top + height)
+        if shown.offset_text:
+          left, right, a, b = ink(shown.offset_text, FontRole.MEDIUM, offset_size)
+          offset_top = number_top + height + 4
+          fits = fits and circle_fits(59 - (right - left) / 2, 59 + (right - left) / 2, offset_top, offset_top + b - a)
+      else:
+        fits = width <= 96 and height <= 54
+      if fits:
+        break
+      size *= .95
+      if vienna:
+        offset_size *= .95
+    number = centered(shown.posted_text, FontRole.BOLD, size, number_top, color)
+    if shown.offset_text:
+      if not vienna:
+        left, right, a, b = ink(shown.offset_text, FontRole.MEDIUM, offset_size)
+        offset_size *= min(1, 96 / (right - left), 24 / (b - a))
+        offset_top = 97
+      centered(shown.offset_text, FontRole.MEDIUM, offset_size, offset_top, color if vienna else secondary)
     if obs.driver_override_active:
       color = rl.Color(197, 163, 255, 240)
       left, top, right, bottom = number
-      draw_line(self.profile, rl.Vector2(left - 3 * scale, top - 2 * scale), rl.Vector2(right + 3 * scale, bottom + 2 * scale), 2.5 * scale, color)
-      draw_line(self.profile, rl.Vector2(right + 3 * scale, top - 2 * scale), rl.Vector2(left - 3 * scale, bottom + 2 * scale), 2.5 * scale, color)
+      for start, end in ((rl.Vector2(left + 3 * scale, top + 3 * scale), rl.Vector2(right - 3 * scale, bottom - 3 * scale)),
+                         (rl.Vector2(right - 3 * scale, top + 3 * scale), rl.Vector2(left + 3 * scale, bottom - 3 * scale))):
+        rl.draw_line_ex(start, end, 4.5 * scale, rl.Color(6, 14, 10, 220))
+        rl.draw_line_ex(start, end, 2.5 * scale, color)

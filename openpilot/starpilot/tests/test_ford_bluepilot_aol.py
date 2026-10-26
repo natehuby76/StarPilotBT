@@ -55,7 +55,7 @@ def test_real_rejected_packet_resynchronizes_without_permission_bypass(ford_join
   inputs = adapter.host.inputs
   blocked = 0
   monkeypatch.setattr(inputs, 'update', lambda: None)
-  monkeypatch.setattr(inputs, 'lateral_snapshot', lambda speed: None)
+  monkeypatch.setattr(inputs, 'lateral_snapshot', lambda speed, *, angle=False: None)
   # Isolate the adapter recovery while preserving actual physical native authority.
   # The full caller matrix above retains real wire/inventory/freshness qualification.
   monkeypatch.setattr(inputs, 'native_permission', lambda cp, max_age_ns: bool(safety.aol_get_permission_mask() & 1))
@@ -141,3 +141,26 @@ def test_temporary_eps_recovery_with_gas_preserves_only_lateral_intent(ford_join
   monkeypatch.ford_nonzero = True
   monkeypatch.ford_eps_gas = True
   run_actual_producer(ford_joined, monkeypatch, scenario='configuration-parity')
+
+
+@pytest.mark.parametrize('identity', [(CAR.FORD_MUSTANG_MACH_E_MK1, 18)])
+@pytest.mark.parametrize('alpha', [False])
+@pytest.mark.parametrize('hands_free', [True])
+@pytest.mark.parametrize('topology', ['automatic'])
+@pytest.mark.parametrize('delivery', ['paired', 'axis-first', 'event-first', 'never-paired'])
+def test_route45_stock_angle_eps_gas_release_join(ford_joined, monkeypatch, delivery):
+  monkeypatch.ford_nonzero = True
+  monkeypatch.ford_route45_delivery = delivery
+  run_actual_producer(ford_joined, monkeypatch, scenario='route45')
+
+
+@pytest.mark.parametrize('identity', [(CAR.FORD_MUSTANG_MACH_E_MK1, 18)])
+@pytest.mark.parametrize('alpha', [False])
+@pytest.mark.parametrize('hands_free', [True])
+@pytest.mark.parametrize('topology', ['automatic'])
+@pytest.mark.parametrize('refusal', ['permanent-eps', 'main-off', 'cancel'])
+def test_route45_eps_join_keeps_physical_refusals(ford_joined, monkeypatch, refusal):
+  monkeypatch.ford_nonzero = True
+  monkeypatch.ford_route45_delivery = 'axis-first'
+  monkeypatch.ford_route45_refusal = refusal
+  run_actual_producer(ford_joined, monkeypatch, scenario='route45')
