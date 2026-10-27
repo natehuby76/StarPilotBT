@@ -53,6 +53,7 @@ from openpilot.starpilot.ui.wheel_feature import WheelFeature, PREFIX as WHEEL_P
 from openpilot.starpilot.longitudinal.output_max import KEY as OUTPUT_MAX_KEY
 from openpilot.starpilot.ui.tesla_screen_feature import TeslaScreenFeature, KEYS as TESLA_SCREEN_KEYS
 from openpilot.starpilot.ui.ford_lateral_feature import FordLateralFeature, FordClusterFeature
+from openpilot.starpilot.ui.ford_pinion_feature import FordPinionFeature
 from openpilot.starpilot.ui.preap_radar_feature import PreAPRadarFeature, KEYS as PREAP_RADAR_KEYS, capability as preap_radar_capability
 from openpilot.starpilot.ui.gm_tune_feature import GmTuneFeature, GmTruckFeature, GmEvPresetFeature
 from openpilot.starpilot.car.gm.tune_preferences import KEY as GM_TUNE_KEY
@@ -992,6 +993,7 @@ class FeatureSettingsOwner:
     elif page == FeaturePage.TORQUE:
       title = "Steering and Torque"
       rows.extend(FordLateralFeature(self).rows(parked))
+      rows.extend(FordPinionFeature(self).rows(parked))
       rows.extend(FordClusterFeature(self).rows(parked))
       controller_row = self.controller.row()
       if controller_row is not None:
@@ -1309,6 +1311,8 @@ class FeatureSettingsOwner:
       return self._apply_lateral_pause(request)
     if key == "FordHandsFreeCluster":
       return FordClusterFeature(self).apply(request)
+    if key == "FordPrefSteerAngleCurvature":
+      return FordPinionFeature(self).apply(request)
     if key == "FordLateralMode":
       return FordLateralFeature(self).apply(request)
     if key == "TurnAssist":

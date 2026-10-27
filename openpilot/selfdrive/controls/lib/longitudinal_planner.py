@@ -36,6 +36,8 @@ from openpilot.starpilot.longitudinal.follow_jerk import FollowJerk
 from openpilot.starpilot.longitudinal.lead_takeoff import LeadTakeoff, project as project_takeoff
 from openpilot.starpilot.longitudinal.lead_behavior import adjust as adjust_lead_behavior
 from openpilot.starpilot.longitudinal.hkg_vision_stop import owner_for as vision_stop_owner
+from openpilot.starpilot.car.ford.stopped_lead import owner_for as ford_stop_owner
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import STOP_DISTANCE
 from openpilot.starpilot.longitudinal.lead_approach import LeadApproach, LeadApproachKey, project as project_approach
 from openpilot.starpilot.lateral.lane_change_preferences import LaneChangePolicy
 
@@ -132,6 +134,7 @@ class LongitudinalPlanner:
     self.lead_takeoff = LeadTakeoff()
     self.vehicle_far_follow = far_follow_owner(CP, dt)
     self.vision_stop_buffer = vision_stop_owner(CP)
+    self.ford_stop_approach = ford_stop_owner(CP, STOP_DISTANCE - .5)
     self.preap_adaptive = preap_adaptive_owner(CP)
 
   def update(self, sm, *, cruise_ceiling: CruiseCeiling | None = None,
@@ -474,6 +477,10 @@ class LongitudinalPlanner:
         active=profile_eligible and not reset_state and self.mpc.solution_status == 0)
     if preap_acceleration_cap is not None:
       output_a_target = min(output_a_target, preap_acceleration_cap)
+    if self.ford_stop_approach is not None:
+      output_a_target, self.output_should_stop = self.ford_stop_approach.sample(
+        sm, now_ns=sample_now_ns, drive_id=drive_id, target=float(output_a_target),
+        stopping=self.output_should_stop, accel_min=ACCEL_MIN, active=profile_eligible and not reset_state)
     self.output_a_target = np.clip(output_a_target, ACCEL_MIN, ACCEL_MAX)
 
     self.v_desired_filter.x = self.v_desired_filter.x + self.dt * (self.output_a_target + a_prev) / 2.0

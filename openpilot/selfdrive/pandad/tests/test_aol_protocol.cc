@@ -252,6 +252,18 @@ int main() {
   for (uint32_t word = 0U; word <= 65535U; ++word) {
     bool expected = false;
     for (const auto exact : ford_words) expected |= (word == exact) || (word == (exact | 256U));
+    // Exact opt-in geometry families, independently enumerated from the native decoder.
+    for (uint16_t geometry = 1U; geometry <= 12U; geometry++) {
+      const bool classic = (geometry == 1U) || (geometry == 2U) || (geometry == 5U) || (geometry == 6U) || (geometry == 9U);
+      const uint16_t curvature = classic ? 32U : ((geometry == 11U) ? 18U : ((geometry == 10U) ? 10U : 66U));
+      for (uint16_t longitudinal = 0U; longitudinal <= 1U; longitudinal++) {
+        for (uint16_t angle = 0U; angle <= 1U; angle++) {
+          if ((geometry == 10U) && angle) continue;
+          const uint16_t exact = 512U | (geometry << 10U) | curvature | longitudinal | (angle ? 128U : 0U);
+          expected |= (word == exact) || (word == (exact | 256U));
+        }
+      }
+    }
     auto ford = status();
     ford.safety_mode = 6U;
     ford.safety_param = static_cast<uint16_t>(word);

@@ -1,4 +1,5 @@
 #pragma once
+#include "opendbc/safety/modes/ford_pinion.h"
 
 static bool ford_aol_manual = false;
 static bool ford_aol_enabled = false;
@@ -202,7 +203,7 @@ static void ford_aol_full_engagement(bool cruise_rising) {
 
 static bool ford_aol_param_valid(uint16_t param) {
   bool result = false;
-  switch (param & ~256U) {
+  switch (ford_pinion_base_word(param) & ~256U) {
     case 8U: case 9U: case 10U: case 12U: case 13U: case 18U: case 32U: case 33U: case 66U:
       result = true;
       break;
@@ -220,7 +221,7 @@ static void ford_aol_configure(uint16_t param) {
   ford_aol_reset();
   ford_aol_enabled = ford_aol_param_valid(param) && ((unsigned int)alternative_experience == 32U);
   ford_aol_manual = (param & 256U) != 0U;
-  ford_aol_param = param & ~(256U | 128U);
+  ford_aol_param = ford_pinion_base_word(param) & ~(256U | 128U);
   if (ford_aol_enabled) {
     static const AolSafetyPolicy policy = {
       .reset = ford_aol_reset,

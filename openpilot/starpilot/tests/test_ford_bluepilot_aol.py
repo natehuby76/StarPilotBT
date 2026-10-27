@@ -85,6 +85,8 @@ def test_real_rejected_packet_resynchronizes_without_permission_bypass(ford_join
         data[1] ^= 1  # One actual bad checksum; native must reject it.
         assert not safety.safety_tx_hook(libsafety_py.make_CANPacket(address, bus, data))
         blocked += 1
+        # Feed the real rejected CAN return, not just the aggregate counter.
+        adapter.observe_can([(now, [(address, bytes(data), bus | 0xC0)])], bus)
         rejected = True
         continue
       accepted = safety.safety_tx_hook(libsafety_py.make_CANPacket(address, bus, data))
@@ -379,3 +381,56 @@ def test_stock_forwarding_returns_cannot_starve_angle_reengagement(ford_joined, 
   assert neutral_seen
   assert active[0] > 3 and active[1] > 10, active
   assert safety.aol_get_permission_mask() == 1
+
+
+@pytest.mark.parametrize('identity', [(CAR.FORD_MUSTANG_MACH_E_MK1, 18), (CAR.FORD_ESCAPE_MK4, 32)])
+@pytest.mark.parametrize('alpha', [False, True])
+@pytest.mark.parametrize('hands_free', [True])
+@pytest.mark.parametrize('topology', ['automatic', 'manual-multi'])
+def test_unrelated_native_rejection_does_not_reset_granted_angle(ford_joined, monkeypatch):
+  from types import SimpleNamespace
+  from opendbc.car import structs
+  from opendbc.car.ford import fordcan
+  from opendbc.safety.tests.libsafety import libsafety_py
+  from openpilot.cereal import messaging
+
+  joined = ford_joined
+  native, safety = joined.native, joined.safety
+  native.arm()
+  adapter = joined.host.CI.CC.bp_lat
+  inputs = adapter.host.inputs
+  monkeypatch.setattr(inputs, 'update', lambda: None)
+  monkeypatch.setattr(inputs, 'lateral_snapshot', lambda speed, *, angle=False: None)
+  monkeypatch.setattr(inputs, 'native_permission', lambda cp, max_age_ns: bool(safety.aol_get_permission_mask() & 1))
+  control = structs.CarControl(enabled=True, latActive=True)
+  control.actuators.curvature = .0001
+  state = structs.CarState(canValid=True, vEgoRaw=15., gearShifter=structs.CarState.GearShifter.drive)
+  state.cruiseState.available = True
+  source = SimpleNamespace(out=state, lat_ctl_lim_stat=0)
+  blocked = active_after = 0
+  rejected = False
+  for frame in range(180):
+    native.pump(1, mask=1, speed=15.)
+    now = (1_000_000 + native.tick * 10_000) * 1000
+    if frame == 80:
+      # LONG is independently denied. Its real rejection must not erase LAT.
+      message = fordcan.create_acc_msg(native.packer, joined.host.CI.CC.CAN, True, 1., 1., False, False, v_ego_kph=50.)
+      address, data, bus = message
+      assert not safety.get_controls_allowed()
+      assert not safety.safety_tx_hook(libsafety_py.make_CANPacket(address, bus - joined.offset, data))
+      assert safety.aol_get_permission_mask() == 1
+      adapter.observe_can([(now, [(address, data, bus | 0xC0)])], bus)
+      blocked += 1
+      rejected = True
+    panda = messaging.new_message('pandaStates', 1, valid=True, logMonoTime=now)
+    panda.pandaStates[0].safetyTxBlocked = blocked
+    inputs.sm.update_msgs(now / 1e9, [panda.as_reader()])
+    packets = adapter.step_lateral(control, source, native.packer, joined.host.CI.CC.CAN, frame, now)
+    packets += adapter.step_lka(native.packer, joined.host.CI.CC.CAN, now)
+    for address, data, bus in packets:
+      assert safety.safety_tx_hook(libsafety_py.make_CANPacket(address, bus - joined.offset, data)), (frame, hex(address), data.hex())
+      if address in (0x3D3, 0x3D6) and frame >= 80:
+        active = ((data[4] >> 2) & 7) if address == 0x3D3 else ((data[0] >> 4) & 7)
+        assert active == 1, 'Unrelated LONG rejection reset independently granted steering'
+        active_after += 1
+  assert rejected and active_after > 10

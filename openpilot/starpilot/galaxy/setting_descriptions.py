@@ -61,6 +61,7 @@ DESCRIPTIONS = {
   'SLCFallback': 'Keeps the previously accepted speed limit when sources are unavailable, until another limit is accepted.',
   'slc_adopt': 'Keeps the current speed-limit offset schedule fixed when display units change.',
   'slc_reset': 'Resets saved speed-limit offsets while retaining valid configured speed ranges.',
+  'reset_driver_monitoring': 'Clear saved wheel-side detection. Automatic detection restarts on the next drive.',
   'AlwaysAllowUploads': 'Allows queued full logs and videos to upload over metered networks. This uses mobile data.',
   'UseVOACC': ('Use vision-only adaptive cruise control instead of radar-assisted lead detection. ' +
                'Requires StarPilot longitudinal control. Applies next drive; radar faults and safety checks remain active.'),

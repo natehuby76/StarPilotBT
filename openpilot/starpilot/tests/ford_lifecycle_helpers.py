@@ -182,6 +182,7 @@ def run_actual_producer(ford_joined, monkeypatch, *, scenario='reverse', reengag
   case = availability.IoniqAvailabilityTests(methodName='runTest')
   now = [10_000_000_000]
   queued, published, previous_sd = [], {}, {}
+  delayed_native = {}
   steps = start_tick = native.tick
   warmup_waits = qualified_samples = 0
   active_lat_frames = active_long_frames = 0
@@ -204,6 +205,8 @@ def run_actual_producer(ford_joined, monkeypatch, *, scenario='reverse', reengag
       local.setenv('SIMULATION', '0')
       sd, controls, drive = case._authority_callers(False, cp=host.CP.as_reader().as_builder(), genuine_events=True)
       assert sd.CP.to_dict() == controls.CP.to_dict() == host.CP.to_dict()
+      from openpilot.starpilot.aol.intent import read_settings
+      sd.aol_settings = read_settings(host.params)
       local.setattr(card_module, 'REPLAY', False)
       local.setattr(card_module.time, 'monotonic_ns', lambda: now[0])
       local.setattr(card_module.time, 'clock_gettime_ns', lambda clock: now[0])
@@ -287,7 +290,7 @@ def run_actual_producer(ford_joined, monkeypatch, *, scenario='reverse', reengag
             fields['CcStat_D_Actl'] = 0
           if scenario == 'route45' and refusal == 'cancel' and name == 'Steering_Data_FD1':
             fields['CcAslButtnCnclPress'] = 1
-          if scenario == 'route49' and name == 'Steering_Data_FD1':
+          if scenario in ('route49', 'cancel-native-cadence') and name == 'Steering_Data_FD1':
             fields['CcAslButtnCnclResPress'] = int(cancel)
           if scenario in ('route45', 'route49', 'route22') and name == 'EPAS_INFO':
             fields['SteeringColumnTorque'] = 2 if steering else 0
@@ -392,7 +395,15 @@ def run_actual_producer(ford_joined, monkeypatch, *, scenario='reverse', reengag
           panda.pandaStates[0].alternativeExperience = 32
         device = messaging.new_message('deviceState', valid=True, logMonoTime=now[0])
         device.deviceState.started, device.deviceState.startedMonoTime = True, 9_000_000_000
-        events = [wire.as_reader(), panda.as_reader(), device.as_reader()]
+        # Match pandad's 10Hz native publication, including a pedal-first USB read.
+        # Values are actual native results; retained messages keep their stamps.
+        if getattr(monkeypatch, 'ford_native_10hz', False):
+          if not delayed_native or steps % 10 == 0 or (brake or cancel) and not permission & 2 and delayed_native.get('permission', 3) & 2:
+            delayed_native.update(wire=wire.as_reader(), panda=panda.as_reader(), permission=permission)
+          wire_message, panda_message = delayed_native['wire'], delayed_native['panda']
+        else:
+          wire_message, panda_message = wire.as_reader(), panda.as_reader()
+        events = [wire_message, panda_message, device.as_reader()]
         for name in ('selfdriveState', 'aolAxisState', 'onroadEvents'):
           if name in previous_sd:
             events.append(previous_sd[name])  # Original publication/source stamps.
@@ -443,8 +454,8 @@ def run_actual_producer(ford_joined, monkeypatch, *, scenario='reverse', reengag
           native_request_long=bool(native_request & 2),
           panda_controls_allowed=bool(safety.get_controls_allowed()),
           panda_fault=slot.safetyRxChecksInvalid,
-          panda_state_message=panda,
-          safety_message=wire,
+          panda_state_message=panda_message.as_builder(),
+          safety_message=wire_message.as_builder(),
         )
         if delayed_pedal_frames:
           assert command.latActive and host.aol_card_intent.allowed_latch, 'Native-first pedal erased granted lateral intent'
@@ -462,7 +473,7 @@ def run_actual_producer(ford_joined, monkeypatch, *, scenario='reverse', reengag
           owner = host.CI.CC.bp_lat.host.inputs
           # Real controller input reader consumes the same original fresh native
           # receipt, Panda inventory and synthetic model boundary as Controls.
-          messages = [wire.as_reader(), panda.as_reader()]
+          messages = [wire_message, panda_message]
           for service in ('modelV2', 'lateralDelay'):
             message = messaging.new_message(service, valid=True, logMonoTime=source_ns)
             setattr(message, service, controls.sm[service])
@@ -730,6 +741,37 @@ def run_actual_producer(ford_joined, monkeypatch, *, scenario='reverse', reengag
         if delivery != 'paired':
           assert route45_mixed[0]
         joined.route45_trace = route45_trace
+        return
+      if scenario == 'cancel-native-cadence':
+        for _ in range(41):
+          state, axis, sd_state, command = step(engaged=True)
+        assert command.latActive and host.aol_card_intent.allowed_latch
+        for _ in range(12):
+          state, axis, sd_state, command = step(engaged=True, cancel=True)
+          assert host.aol_card_intent.allowed_latch, (host.aol_card_intent.latch_clear_reason, transition_trace[-12:])
+          assert command.latActive
+          if not joined.last_permission & 2:
+            assert not command.longActive
+        for _ in range(35):
+          state, axis, sd_state, command = step()
+          assert host.aol_card_intent.allowed_latch and command.latActive and not command.longActive, transition_trace[-12:]
+        for _ in range(30):
+          state, axis, sd_state, command = step(main_off=True)
+        assert not host.aol_card_intent.allowed_latch and not command.latActive and not command.longActive
+        return
+      if scenario == 'brake-native-cadence':
+        for _ in range(41):
+          state, axis, sd_state, command = step(engaged=True)
+        assert command.latActive and command.longActive and host.aol_card_intent.allowed_latch
+        for _ in range(35):
+          state, axis, sd_state, command = step(brake=True)
+          assert host.aol_card_intent.allowed_latch, (host.aol_card_intent.latch_clear_reason, transition_trace[-12:])
+          assert command.latActive, transition_trace[-12:]
+          if state.brakePressed or not joined.last_permission & 2:
+            assert not command.longActive
+        for _ in range(35):
+          state, axis, sd_state, command = step()
+          assert host.aol_card_intent.allowed_latch and command.latActive and not command.longActive
         return
       if scenario == 'configuration-parity':
         for _ in range(40):

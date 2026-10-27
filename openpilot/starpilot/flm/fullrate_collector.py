@@ -425,7 +425,9 @@ class FullrateCollector:
         self.split('changed_duplicate_control', reset=True)
         return False
       return True
-    if self.controls and value.control_ns <= next(reversed(self.controls)):
+    # A joined command leaves controls but remains part of this producer tape.
+    # Cross-stream ingestion must not hide its ordering boundary after a join.
+    if self.recent_controls and value.control_ns <= next(reversed(self.recent_controls)):
       self.split('reordered_control')
       return False
     self._last_live_ingest_ns = now_ns
@@ -877,6 +879,22 @@ class FullrateCollector:
     return self.result
 
 
+def _check_evidence_wire(event):
+  wire_bytes = len(event.as_builder().to_bytes())
+  if wire_bytes > MAX_SNAPSHOT_WIRE_BYTES:
+    raise ValueError('wire_bound')
+  if wire_bytes > MAX_WIRE_BYTES:
+    kind = event.which()
+    control_snapshot = kind == 'starpilotLateralState' and bool(len(event.starpilotLateralState.learningEvidence.replaySnapshot))
+    ford_events = (
+      kind == 'starpilotCarState'
+      and event.starpilotCarState.fordLearningEvidence.version == 1
+      and 0 < len(event.starpilotCarState.fordLearningEvidence.rows) <= 4
+    )
+    if not (control_snapshot or ford_events):
+      raise ValueError('non_snapshot_wire_bound')
+
+
 def drain(socket, decode, receive, collector, now_ns):
   """Nonblocking bounded existing transport; overflow rejects whole maneuver."""
   for _ in range(MAX_DRAIN):
@@ -884,19 +902,7 @@ def drain(socket, decode, receive, collector, now_ns):
     if event is None:
       return True
     try:
-      wire_bytes = len(event.as_builder().to_bytes())
-      if wire_bytes > MAX_SNAPSHOT_WIRE_BYTES:
-        raise ValueError('wire_bound')
-      if wire_bytes > MAX_WIRE_BYTES:
-        kind = event.which()
-        control_snapshot = kind == 'starpilotLateralState' and bool(len(event.starpilotLateralState.learningEvidence.replaySnapshot))
-        ford_events = (
-          kind == 'starpilotCarState'
-          and event.starpilotCarState.fordLearningEvidence.version == 1
-          and 0 < len(event.starpilotCarState.fordLearningEvidence.rows) <= 4
-        )
-        if not (control_snapshot or ford_events):
-          raise ValueError('non_snapshot_wire_bound')
+      _check_evidence_wire(event)
       decode(event, collector, now_ns)
     except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
       collector.split('malformed_evidence', reset=True)
@@ -904,5 +910,52 @@ def drain(socket, decode, receive, collector, now_ns):
   # The bounded lookahead is observation only; an overrun cannot silently pass.
   if receive(socket) is not None:
     collector.overrun()
+    return False
+  return True
+
+
+class _DrainOverrun(Exception):
+  pass
+
+
+def drain_pair(control_socket, control, applied_socket, applied, receive, collector, now_ns):
+  """Merge two bounded FIFO tapes by their original publisher headers.
+
+  Only the two queue heads compete; never sort a producer's own tape. A held
+  command can be republished by Card, so embedded control/apply clocks are not
+  transport ordering keys. Headers choose order only: the original callbacks
+  still decode the untouched event and resample source/native/receiver clocks.
+  Equal headers put control first, matching the previous causal preference.
+  Malformed input or either stream overrunning remains a maneuver boundary.
+  """
+  sockets, callbacks = (control_socket, applied_socket), (control, applied)
+  counts = [0, 0]
+
+  def head(index):
+    event = receive(sockets[index])
+    if event is None:
+      return None
+    # This is the same one-message bounded lookahead as the single-stream drain.
+    if counts[index] == MAX_DRAIN:
+      raise _DrainOverrun
+    _check_evidence_wire(event)
+    stamp = event.logMonoTime
+    if type(stamp) is not int or stamp <= 0:
+      raise ValueError('invalid_publisher_header')
+    return event, stamp
+
+  try:
+    pending = [head(0), head(1)]
+    while pending[0] is not None or pending[1] is not None:
+      index = 0 if pending[1] is None or (pending[0] is not None and pending[0][1] <= pending[1][1]) else 1
+      event, _stamp = pending[index]
+      callbacks[index](event, collector, now_ns)
+      counts[index] += 1
+      pending[index] = head(index)
+  except _DrainOverrun:
+    collector.overrun()
+    return False
+  except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
+    collector.split('malformed_evidence', reset=True)
     return False
   return True

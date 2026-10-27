@@ -28,6 +28,7 @@ class BluePilotLateral:
     self.pending_generation = 0
     self.announced_generation = -1
     self.sent_generation = -2
+    self.steering_rejection_ns = 0
     self.apply_curvature_last = 0.0
 
   def observe_can(self, can_packets, main_bus):
@@ -40,7 +41,14 @@ class BluePilotLateral:
       if timestamp <= 0:
         continue
       for address, data, source in frames:
-        if source != (main_bus | 0x80) or len(data) != 8:
+        if len(data) != 8:
+          continue
+        if source == (main_bus | 0xC0) and address in (control_address, 0x3CA):
+          if timestamp > self.steering_rejection_ns:
+            self.steering_rejection_ns = timestamp
+            self.host.steering_rejected = True
+          continue
+        if source != (main_bus | 0x80):
           continue
         if address == control_address and data == self.control_return_payload and timestamp > self.control_returned_ns:
           self.control_return_payload = None
@@ -66,9 +74,15 @@ class BluePilotLateral:
     command = self.announced
     # A pending permission withdrawal is immediate; an increase waits until
     # the 33Hz side channel has announced the matching final actuator.
-    if not self.pending.active or not 0 < self.announced_ns <= now_ns <= self.announced_ns + 60_000_000:
+    fresh = 0 < self.announced_ns <= now_ns <= self.announced_ns + 60_000_000
+    if not self.pending.active or not fresh:
       command = Command()
       self.announced = command
+      if not fresh:
+        # Native records the neutral actuator as zero. Do not resume an old
+        # nonzero path after a new announcement; restart through the normal limits.
+        self.host.controller.reset_actuator()
+        self.pending = Command()
     self.control_sent_ns = now_ns
     self.sent_generation = self.announced_generation
     message = lateral(packer, CAN.main, command, canfd=self.canfd, counter=self.control_counter)

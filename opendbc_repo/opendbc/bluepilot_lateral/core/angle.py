@@ -69,10 +69,13 @@ class AngleController:
     self.blip_hold = 0.0
     self.blip_count = 0
 
-  def reset(self):
+  def reset_actuator(self):
     self.trim.reset()
     self.path_last = 0.0
     self.speed_last = 0.1
+
+  def reset(self):
+    self.reset_actuator()
     self.desired_last = 0.0
     self.human_timer = 0.0
     self.press_last = False

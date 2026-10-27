@@ -340,12 +340,15 @@ def main(demo=False):
   model = None
   big_prepared = None
 
+  # with Jetlink on, the small model's warp output moves where the link sends it from, before warmup links it
+  coherent_warp = jetlink_adapter.coherent_warp()
+
   def load_small():
     if selection.small_path is not None:
       try:
         selected, prepared = load_verified_model(vipc_client_main.width, vipc_client_main.height,
                                                  selection.small_path, selection.small_version, False,
-                                                 selection.small_id, selection.small_sha256)
+                                                 selection.small_id, selection.small_sha256, coherent_warp=coherent_warp)
         return selected, prepared, False
       except Exception:
         cloudlog.exception("selected small model load failed, using shipped RDFv4")
@@ -355,7 +358,7 @@ def main(demo=False):
       raise RuntimeError("Shipped RDFv4 is missing or corrupt")
     fallback, prepared = load_verified_model(vipc_client_main.width, vipc_client_main.height,
                                              path, BY_ID[DEFAULT_SMALL].version, False,
-                                             DEFAULT_SMALL, DEFAULT_SMALL_SHA256)
+                                             DEFAULT_SMALL, DEFAULT_SMALL_SHA256, coherent_warp=coherent_warp)
     return fallback, prepared, selection.small_id != DEFAULT_SMALL
 
   # Preload a custom fallback before the GPU worker takes the catalog lock.

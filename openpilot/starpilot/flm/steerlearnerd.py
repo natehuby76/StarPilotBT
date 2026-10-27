@@ -16,7 +16,7 @@ from functools import partial
 from opendbc.car.structs import car
 from openpilot.cereal import messaging
 from openpilot.common.params import Params
-from openpilot.starpilot.flm.fullrate_collector import FullrateCollector, drain, ControlEvidence, AppliedEvidence
+from openpilot.starpilot.flm.fullrate_collector import FullrateCollector, drain_pair, ControlEvidence, AppliedEvidence
 from openpilot.starpilot.flm.learning_wire import read_control, read_applied, result_message, write_source_receipt
 from openpilot.starpilot.flm.runtime_adapter_registry import SOURCE_LEASE_NS
 
@@ -48,7 +48,7 @@ class _SourceDelivery:
 
 
 def source_receiver(services):
-  # Full-rate control/application tapes are drained separately. This optional
+  # Full-rate control/application tapes retain their original FIFO rows. This optional
   # process conflates CarState, so its receive count cannot measure the 100Hz
   # publisher rate while it processes a batch. Keep the actual envelope,
   # source-age, state-bracket and native checks; do not fabricate freq_ok.
@@ -645,8 +645,7 @@ def run(
               return
           _collect_applied_output(collector, applied, sm, CP, received_now)
 
-      drain(control_socket, control, messaging.recv_one_or_none, sink, now)
-      drain(applied_socket, output, messaging.recv_one_or_none, sink, now)
+      drain_pair(control_socket, control, applied_socket, output, messaging.recv_one_or_none, sink, now)
       if collector is not None:
         # Decoding queued frames may outlast the sampled shared inputs. Consume
         # real pending deliveries before pose/native checks; keep their original

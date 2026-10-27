@@ -351,7 +351,14 @@ class TransportPauseFeedback:
     from opendbc.car import structs
     ev9 = cp.brand == 'hyundai' and ev9_qualified(cp, marked_only=True)
     from openpilot.starpilot.car.ford.aol import early_native_long_withdrawal_supported as ford_early_long
-    early_long = gm or cp.brand == 'hyundai' and early_native_long_withdrawal_supported(cp) or ev9 or ford_early_long(cp)
+    from opendbc.car.ford.aol import qualified as ford_qualified
+    # Brake or cruise cancel can withdraw LONG before the next 10Hz request echo. This uses
+    # an actual independently granted LAT proof and retains intent only.
+    ford_withdrawal = bool(cp.brand == 'ford' and ford_qualified(cp, marked_only=True) and cp.openpilotLongitudinalControl and
+      (cs.brakePressed or not cs.cruiseState.enabled or physical_cancel(cs, cp)) and not cs.gasPressed and not cs.regenBraking and
+      cs.cruiseState.available and not cs.doorOpen and not cs.seatbeltUnlatched and
+      not cs.vehicleSensorsInvalid and cs.gearShifter == structs.CarState.GearShifter.drive)
+    early_long = gm or cp.brand == 'hyundai' and early_native_long_withdrawal_supported(cp) or ev9 or ford_early_long(cp) or ford_withdrawal
     from openpilot.starpilot.car.gm.aol import f1_conventional_lateral_owner, gm_physical_pedal_withdrawal
     gm_pedal = gm_physical_pedal_withdrawal(cp, cs) and not f1_conventional_lateral_owner(cp)
     event_ns = int(sm.logMonoTime['onroadEvents'])
@@ -372,13 +379,15 @@ class TransportPauseFeedback:
         not 0 < self.lateral_source_ns <= axis.sourceCarStateMonoTime <= axis.observedMonoTime <= now_ns or
         now_ns - axis.sourceCarStateMonoTime > AXIS_MAX_AGE_NS or
         not cs.canValid or cs.canTimeout or cs.steerFaultTemporary or cs.steerFaultPermanent or cs.accFaulted or
-        cs.steeringDisengage or physical_cancel(cs, cp) or
+        cs.steeringDisengage or physical_cancel(cs, cp) and not ford_withdrawal or
         not sm.seen['onroadEvents'] or not sm.valid['onroadEvents'] or not sm.alive['onroadEvents'] or
         not 0 < int(sm.logMonoTime['onroadEvents']) <= now_ns or
         now_ns - int(sm.logMonoTime['onroadEvents']) > 1_500_000_000 or
         any(event.immediateDisable or event.softDisable or
             event.userDisable and not (ev9_main_off and event.name == log.OnroadEvent.EventName.wrongCarMode or
-              gm_pedal and event.name == log.OnroadEvent.EventName.pedalPressed)
+              gm_pedal and event.name == log.OnroadEvent.EventName.pedalPressed or
+              ford_withdrawal and event.name in (log.OnroadEvent.EventName.pedalPressed, log.OnroadEvent.EventName.pcmDisable,
+                log.OnroadEvent.EventName.buttonCancel))
             for event in sm['onroadEvents'])):
       return None
     native = independent_lateral_health(sm, cp, cs, self.session, now_ns)
@@ -1238,15 +1247,17 @@ class TransportPauseFeedback:
     from opendbc.car.structs import car
     from opendbc.car.hyundai.canfd_angle_aol import qualified, temporary_restriction
     from opendbc.car.mazda.stock_aol import qualified as mazda_qualified, temporary_restriction as mazda_restriction
+    from opendbc.car.subaru.stock_aol import temporary_restriction as subaru_restriction
 
-    if (not (qualified(cp, marked_only=True) or mazda_qualified(cp, marked_only=True)) or cs.gearShifter != car.CarState.GearShifter.drive or
-        not (temporary_restriction(cp, cs) or mazda_restriction(cp, cs)) or cs.steerFaultTemporary or cs.steerFaultPermanent or
+    subaru_stop = cs.standstill and subaru_restriction(cp, cs)
+    if (not (qualified(cp, marked_only=True) or mazda_qualified(cp, marked_only=True) or subaru_stop) or cs.gearShifter != car.CarState.GearShifter.drive or
+        not (temporary_restriction(cp, cs) or mazda_restriction(cp, cs) or subaru_stop) or cs.steerFaultTemporary or cs.steerFaultPermanent or
         not latched or self.failed or self.paused or self.pending_event or self.retention_started_ns or
         not self.lateral_only_baseline or not self.lateral_inventory or not self.lateral_baseline_ns or
         not self.session or axis.sessionId != self.session or str(axis.faultReason) != 'none' or
         not producer or producer != self.availability_producer or
         axis.intentProducerSessionId != producer or axis.intentIntegrityEpoch != self.availability_epoch or
-        not axis.desiredLateral or not axis.nativeAcknowledged or
+        not (axis.desiredLateral or subaru_stop and not axis.lateralActive) or not axis.nativeAcknowledged or
         axis.desiredLongitudinal or axis.longitudinalActive or
         not 0 < axis.sourceCarStateMonoTime <= stamp <= now_ns or
         now_ns - axis.sourceCarStateMonoTime > AXIS_MAX_AGE_NS):

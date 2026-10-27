@@ -1646,6 +1646,7 @@ class SelfdriveD:
     from openpilot.starpilot.car.gm.aol import physical_cancel_lateral_allowed, stock_ascm_independent_lateral, cc_independent_lateral_below_engage
     from openpilot.starpilot.car.hyundai.aol import physical_cancel_lateral_allowed as hkg_cancel_lateral_allowed
     from openpilot.starpilot.car.mazda.aol import physical_cancel_lateral_allowed as mazda_cancel_lateral_allowed
+    from openpilot.starpilot.car.ford.aol import physical_cancel_lateral_allowed as ford_cancel_lateral_allowed
     from openpilot.starpilot.car.subaru.aol import sng_standstill_lateral_inhibit
     from openpilot.starpilot.aol.dm import lateral_event_context
     from openpilot.starpilot.car.toyota.legacy_lateral import below_engage_lateral_allowed as toyota_below_engage_lateral_allowed
@@ -1665,6 +1666,10 @@ class SelfdriveD:
                              physical_cancel_lateral_allowed(self.CP, CS, intent, native,
                                source_ns=getattr(self, 'aol_car_state_log_ns', 0), now_ns=now_ns) or
                              hkg_cancel_lateral_allowed(self.CP, CS, intent, native,
+                               settings=self.aol_settings, previous=getattr(self, 'aol_axis_decision', None),
+                               source_ns=getattr(self, 'aol_car_state_log_ns', 0), now_ns=now_ns,
+                               axis_session_id=getattr(self, 'aol_session_id', '')) or
+                             ford_cancel_lateral_allowed(self.CP, CS, intent, native,
                                settings=self.aol_settings, previous=getattr(self, 'aol_axis_decision', None),
                                source_ns=getattr(self, 'aol_car_state_log_ns', 0), now_ns=now_ns,
                                axis_session_id=getattr(self, 'aol_session_id', '')) or
