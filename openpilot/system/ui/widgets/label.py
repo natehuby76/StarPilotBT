@@ -3,6 +3,7 @@ from enum import IntEnum
 from collections.abc import Callable
 from typing import Union
 import pyray as rl
+from openpilot.system.ui.lib.emoji import text_units
 
 from openpilot.system.ui.lib.application import (
   gui_app, FontWeight, DEFAULT_TEXT_SIZE, DEFAULT_TEXT_COLOR, FONT_SCALE, TextAlignment, TextAlignmentVertical, font_fallback,
@@ -44,16 +45,17 @@ def gui_label(
   # Elide text to fit within the rectangle
   if elide_right and text_size.x > rect.width:
     _ellipsis = "..."
-    left, right = 0, len(text)
+    units = text_units(text)
+    left, right = 0, len(units)
     while left < right:
       mid = (left + right) // 2
-      candidate = text[:mid] + _ellipsis
+      candidate = "".join(units[:mid]) + _ellipsis
       candidate_size = measure_text_cached(font, candidate, font_size)
       if candidate_size.x <= rect.width:
         left = mid + 1
       else:
         right = mid
-    display_text = text[: left - 1] + _ellipsis if left > 0 else _ellipsis
+    display_text = "".join(units[: left - 1]) + _ellipsis if left > 0 else _ellipsis
     text_size = measure_text_cached(font, display_text, font_size)
 
   # Calculate horizontal position based on alignment
@@ -135,16 +137,17 @@ class Label(Widget):
         content_width -= self._icon.width + ICON_PADDING
       if text_size.x > content_width:
         _ellipsis = "..."
-        left, right = 0, len(text)
+        units = text_units(text)
+        left, right = 0, len(units)
         while left < right:
           mid = (left + right) // 2
-          candidate = text[:mid] + _ellipsis
+          candidate = "".join(units[:mid]) + _ellipsis
           candidate_size = measure_text_cached(self._font, candidate, self._font_size)
           if candidate_size.x <= content_width:
             left = mid + 1
           else:
             right = mid
-        display_text = text[: left - 1] + _ellipsis if left > 0 else _ellipsis
+        display_text = "".join(units[: left - 1]) + _ellipsis if left > 0 else _ellipsis
 
       self._text_wrapped = [display_text]
     else:
@@ -441,16 +444,17 @@ class UnifiedLabel(Widget):
       # If line + ellipsis doesn't fit, need to truncate
       # Fall through to binary search below
 
-    left, right = 0, len(line)
+    units = text_units(line)
+    left, right = 0, len(units)
     while left < right:
       mid = (left + right) // 2
-      candidate = line[:mid] + ellipsis
+      candidate = "".join(units[:mid]) + ellipsis
       candidate_size = measure_text_cached(self._font, candidate, self._font_size, self._spacing_pixels)
       if candidate_size.x <= max_width:
         left = mid + 1
       else:
         right = mid
-    return line[:left - 1] + ellipsis if left > 0 else ellipsis
+    return "".join(units[:left - 1]) + ellipsis if left > 0 else ellipsis
 
   def get_content_height(self, max_width: int) -> float:
     """

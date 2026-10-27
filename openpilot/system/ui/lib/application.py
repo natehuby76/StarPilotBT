@@ -629,6 +629,9 @@ class GuiApplication:
       rl.unload_texture(texture)
     self._textures = {}
 
+    from openpilot.system.ui.lib.emoji_render import unload as unload_emoji
+    unload_emoji()
+
     for font in self._fonts.values():
       rl.unload_font(font)
     self._fonts = {}
@@ -846,7 +849,8 @@ class GuiApplication:
 
     def _draw_text_ex_scaled(font, text, position, font_size, spacing, tint):
       font = font_fallback(font)
-      return rl._orig_draw_text_ex(font, text, position, font_size * FONT_SCALE, spacing, tint)
+      from openpilot.system.ui.lib.emoji_render import draw
+      return draw(font, text, position, font_size * FONT_SCALE, spacing, tint, rl._orig_draw_text_ex)
 
     rl.draw_text_ex = _draw_text_ex_scaled
 

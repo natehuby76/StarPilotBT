@@ -1,4 +1,5 @@
 import pyray as rl
+from openpilot.system.ui.lib.emoji import text_units
 from openpilot.system.ui.lib.lru_cache import LRUCache
 from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.lib.application import font_fallback
@@ -9,11 +10,11 @@ def _break_long_word(font: rl.Font, word: str, font_size: int, max_width: int, s
     return []
 
   parts = []
-  remaining = word
+  remaining = text_units(word)
 
   while remaining:
-    if measure_text_cached(font, remaining, font_size, spacing).x <= max_width:
-      parts.append(remaining)
+    if measure_text_cached(font, "".join(remaining), font_size, spacing).x <= max_width:
+      parts.append("".join(remaining))
       break
 
     # Binary search for the longest substring that fits
@@ -22,7 +23,7 @@ def _break_long_word(font: rl.Font, word: str, font_size: int, max_width: int, s
 
     while left <= right:
       mid = (left + right) // 2
-      substring = remaining[:mid]
+      substring = "".join(remaining[:mid])
       width = measure_text_cached(font, substring, font_size, spacing).x
 
       if width <= max_width:
@@ -32,7 +33,7 @@ def _break_long_word(font: rl.Font, word: str, font_size: int, max_width: int, s
         right = mid - 1
 
     # Add the part that fits
-    parts.append(remaining[:best_fit])
+    parts.append("".join(remaining[:best_fit]))
     remaining = remaining[best_fit:]
 
   return parts

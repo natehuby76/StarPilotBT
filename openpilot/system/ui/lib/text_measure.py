@@ -1,6 +1,7 @@
 import pyray as rl
 from openpilot.system.ui.lib.application import FONT_SCALE, font_fallback
 from openpilot.system.ui.lib.lru_cache import LRUCache
+from openpilot.system.ui.lib.emoji_render import measure
 
 _CACHE_MAXSIZE = 1024
 _cache: LRUCache[int, rl.Vector2] = LRUCache(_CACHE_MAXSIZE)
@@ -15,7 +16,7 @@ def measure_text_cached(font: rl.Font, text: str, font_size: int, spacing: float
   if cached is not None:
     return cached
 
-  result = rl.measure_text_ex(font, text, font_size * FONT_SCALE, spacing)  # noqa: TID251
+  result = measure(font, text, font_size * FONT_SCALE, spacing)
 
   _cache[key] = result
   return result
