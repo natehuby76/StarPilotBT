@@ -37,7 +37,7 @@ from openpilot.starpilot.lateral.lane_centering import (
   LaneCenteringController, LaneCenteringInput, LaneCenteringRequest, LaneCenteringResult,
 )
 from openpilot.starpilot.lateral.lane_feedback import feedback_message
-from openpilot.starpilot.lateral.lane_clearance import body_dimensions_required, current_delay, interface_dimensions
+from openpilot.starpilot.lateral.lane_clearance import current_delay, interface_dimensions
 from openpilot.starpilot.lateral.lane_change_preferences import LiveLaneChangePolicy
 from openpilot.starpilot.lateral.lane_change_smoothing import LaneChangeSmoother, limit_rate
 from openpilot.starpilot.lateral.lane_runtime import LaneCenteringHost, runtime_supported as lane_runtime_supported
@@ -58,7 +58,9 @@ ACTUATOR_FIELDS = tuple(car.CarControl.Actuators.schema.fields.keys())
 
 
 class Controls:
-  def __init__(self) -> None:
+  def __init__(self, *, predict_lane_clearance: bool = False) -> None:
+    if type(predict_lane_clearance) is not bool:
+      raise TypeError("Invalid lane-clearance selection")
     self.params = Params()
     cloudlog.info("controlsd is waiting for CarParams")
     self.CP = messaging.log_from_bytes(self.params.get("CarParams", block=True), car.CarParams)
@@ -96,8 +98,8 @@ class Controls:
     self.curvature = 0.0
     self.desired_curvature = 0.0
     self.model_turn_assist = ModelTurnAssist()
-    self.lane_centering_controller = LaneCenteringController(body=interface_dimensions(self.CI, self.CP),
-                                                          body_required=body_dimensions_required(self.CI, self.CP))
+    self.lane_centering_controller = (LaneCenteringController(body=interface_dimensions(self.CI, self.CP), body_required=True)
+                                      if predict_lane_clearance else LaneCenteringController())
     self.lateral_pause = LateralPause(read_lateral_pause(self.params), self.params)
     self.lane_change_preferences = LiveLaneChangePolicy(self.params,
       now_ns=0 if os.getenv('REPLAY') == '1' else time.monotonic_ns())
@@ -109,6 +111,7 @@ class Controls:
                         if torque_runtime_enabled(self.CP, self.params) else None)
     self.last_lane_centering_result: LaneCenteringResult | None = None
     self.lane_centering_applied = 0.0
+    self.lane_centering_inactive_reason = 'inactive'
 
     self.pose_calibrator = PoseCalibrator()
     self.calibrated_pose: Pose | None = None
@@ -218,16 +221,6 @@ class Controls:
           apply=lambda: self.LaC.update_torque_parameters(torque_params.latAccelFactorFiltered, torque_params.latAccelOffsetFiltered,
                                                         torque_params.frictionCoefficientFiltered))
 
-    if late_gm_refresh:
-      # Consume queued evidence after optional preparation, immediately before
-      # authority selection. Preparation may outlive the previously fresh proof.
-      # The helper never extends a deadline or receives for active LONG.
-      lateral_inputs_refreshed = refresh_expired_lateral_snapshot(self.sm, now_ns=time.monotonic_ns())
-      if lateral_inputs_refreshed:
-        CS = self.sm['carState']
-        steer_angle_without_offset = math.radians(CS.steeringAngleDeg - lp.angleOffsetDeg)
-        self.curvature = -self.VM.calc_curvature(steer_angle_without_offset, CS.vEgo, lp.roll)
-
     long_plan = self.sm['longitudinalPlan']
     model_v2 = self.sm['modelV2']
 
@@ -242,6 +235,17 @@ class Controls:
     CC.longActive = self.longitudinal_inputs.qualify_active(CC.longActive)
     if self.aol_replay:
       now_ns = int(self.sm.logMonoTime['carState']) if os.getenv('REPLAY') == '1' else time.monotonic_ns()
+      if late_gm_refresh:
+        # Use the authority check's clock sample: a proof can expire after the
+        # earlier preparation/qualification work, even when it was fresh on entry.
+        lateral_inputs_refreshed = refresh_expired_lateral_snapshot(self.sm, now_ns=now_ns)
+        if lateral_inputs_refreshed:
+          CS = self.sm['carState']
+          CC.enabled = self.sm['selfdriveState'].enabled
+          standstill = abs(CS.vEgo) <= max(self.CP.minSteerSpeed, 0.3) or CS.standstill
+          steer_angle_without_offset = math.radians(CS.steeringAngleDeg - lp.angleOffsetDeg)
+          self.curvature = -self.VM.calc_curvature(steer_angle_without_offset, CS.vEgo, lp.roll)
+          now_ns = time.monotonic_ns()
       axis = current_axis(self.sm, now_ns=now_ns)
       native = current_native(self.sm, self.CP, now_ns=now_ns,
                               axis_session_id=str(axis.sessionId) if axis is not None else None)
@@ -365,12 +369,15 @@ class Controls:
       self.model_turn_assist.twitch_guard_remaining = update_twitch_guard(0., CS.vEgo, CS.standstill)
     lane_base_curvature = new_desired_curvature
     self.lane_centering_applied = 0.0
+    self.lane_centering_inactive_reason = 'inactive'
     self.last_lane_centering_result = None
     lane_delay = None
     if lane_centering is None and self.lane_centering_host is not None:
       now_ns = int(self.sm.logMonoTime['carState']) if os.getenv('REPLAY') == '1' else time.monotonic_ns()
       lane_centering = self.lane_centering_host.sample(self.sm, now_ns=now_ns,
                                                      lateral_active=CC.latActive, longitudinal_active=CC.longActive)
+      if lane_centering is None:
+        self.lane_centering_inactive_reason = self.lane_centering_host.last_refusal
     if lane_centering is None:
       self.lane_centering_controller.reset()
     elif not isinstance(lane_centering, LaneCenteringRequest):
@@ -569,7 +576,7 @@ class Controls:
     feedback = feedback_message(
       self.last_lane_centering_result, self.lane_centering_applied, CC.latActive,
       model_mono_time=self.sm.logMonoTime['modelV2'], car_control_mono_time=cc_send.logMonoTime,
-      valid=bool(CS.canValid and self.sm.all_checks(['modelV2'])))
+      valid=bool(CS.canValid and self.sm.all_checks(['modelV2'])), inactive_reason=getattr(self, 'lane_centering_inactive_reason', 'inactive'))
     automatic = getattr(self, 'global_learning', None)
     if automatic is not None:
       try:

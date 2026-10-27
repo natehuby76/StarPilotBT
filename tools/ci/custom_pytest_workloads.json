@@ -1413,10 +1413,10 @@
       "basis": "Actual complete-module setup/call/teardown receipts, hosted tests40108387164 custom14; same source blob. Scheduling estimate only; all original cases and timeout retained."
     },
     "openpilot/starpilot/tests/test_ford_bluepilot_aol.py": {
-      "blob": "e523c95becf4219ff0b4ff54dd56c21ebdcc9c4f",
-      "cases": 71,
-      "seconds": 135.1532473259997,
-      "basis": "Hosted run40231700807 head3b3960: 71/71 cases completed with 135.153247326 setup/call/teardown seconds."
+      "blob": "ce0ee89600b5b608eb2c905a43c0c8ec8db5cc0b",
+      "cases": 133,
+      "seconds": 274.055069753,
+      "basis": "Hosted run40449589613 head12dab8c31dd362a6198b9f2bb55facdf7dd34a9f custom19 artifact12710448232: complete module setup/call/teardown durations; every case passed. Scheduling estimate only; no grouping or timeout change."
     },
     "openpilot/starpilot/car/toyota/tests/test_sdsu_priority_callers.py": {
       "blob": "3f8196b546f7de4ec09af452552b34b71b692371",
@@ -2101,6 +2101,12 @@
       "cases": 181,
       "seconds": 0.17966826400288483,
       "basis": "max per-case complete phase seconds across hosted runs40231700807 and40235133424"
+    },
+    "openpilot/starpilot/tests/test_ford_recorded_lifecycle.py": {
+      "blob": "010f3f5b83b4c455159cbc076e5b6ab4075114c8",
+      "cases": 10,
+      "seconds": 31.794074447000412,
+      "basis": "Hosted run40449589613 head12dab8c31dd362a6198b9f2bb55facdf7dd34a9f custom19 artifact12710448232: complete module setup/call/teardown durations; every case passed. Scheduling estimate only; no grouping or timeout change."
     }
   },
   "reference_sha": "6eb9df96425a661afcbf1edfa27894d6e49b3706",

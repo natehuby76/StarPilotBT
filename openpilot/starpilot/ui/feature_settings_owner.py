@@ -1073,7 +1073,7 @@ class FeatureSettingsOwner:
       rows.append(self._bool_row("ShowSpeedLimits", "Show speed limit signs", self.authority("preferences"),
                                  reason="Display signs independently of Speed Limit Controller; does not change cruise speed"))
       confirmation = self._bool_row("SLCConfirmation", "Automatic adoption", allowed,
-        reason="On flashes new limits for 3 seconds, then sets cruise speed; Off asks for confirmation within 10 seconds")
+        reason="On adopts new limits immediately; Off asks for confirmation within 10 seconds")
       rows.append(replace(confirmation, value={"On": "Off", "Off": "On"}.get(confirmation.value, confirmation.value), default_value="On"))
       source_capability = self._source_capability()
       vision_dev, maps_available = source_capability

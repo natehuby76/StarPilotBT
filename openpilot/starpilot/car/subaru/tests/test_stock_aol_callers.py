@@ -22,7 +22,7 @@ from openpilot.starpilot.car.subaru.tests.native_fixture import subaru_native_pa
 
 
 @pytest.mark.parametrize('candidate', [CAR.SUBARU_ASCENT_2023, CAR.SUBARU_LEGACY_2025, CAR.SUBARU_CROSSTREK_2025, CAR.SUBARU_FORESTER, CAR.SUBARU_OUTBACK])
-def test_actual_full_engage_brake_reverse_temporary_recovery_mainoff(candidate, subaru_native_pair, tmp_path, aol=True, manual=False):
+def test_actual_full_engage_brake_reverse_temporary_recovery_mainoff(candidate, subaru_native_pair, tmp_path, aol=True, manual=False, stop_resume=False):
   fw = firmware_records(candidate, FW_VERSIONS, 'subaru')
   rows = []
   with actual_factory(candidate, gen_empty_fingerprint(), fw, '0' * 17, manual=manual, aol=aol) as (card, params, matches):
@@ -46,7 +46,7 @@ def test_actual_full_engage_brake_reverse_temporary_recovery_mainoff(candidate, 
     receipt = None
     steering_name = 'ES_LKAS_ANGLE' if cp.steerControlType == structs.CarParams.SteerControlType.angle else 'ES_LKAS'
     steering_address = ci.CC.packer.dbc.name_to_msg[steering_name].address
-    steering_bus = 0 if candidate in (CAR.SUBARU_ASCENT_2023, CAR.SUBARU_FORESTER, CAR.SUBARU_OUTBACK, CAR.SUBARU_FORESTER_2022, CAR.SUBARU_OUTBACK_2023) else 1
+    steering_bus = 0
     decoder = CANParser(DBC[candidate][Bus.pt], [(steering_name, 0)], steering_bus)
     dash_decoder = CANParser(DBC[candidate][Bus.pt], [('ES_LKAS_State', 0)], 0)
     dash_emissions = 0
@@ -60,10 +60,11 @@ def test_actual_full_engage_brake_reverse_temporary_recovery_mainoff(candidate, 
         reverse = 150 <= tick < 185
         temporary = 225 <= tick < 260
         main = not 310 <= tick < 350
+        stopped = stop_resume and 185 <= tick < 195
         values = {
           'Steering_Torque': {'Steer_Warning': int(temporary)},
           'Steering_2': {'Steering_Angle': 0},
-          'Wheel_Speeds': dict.fromkeys(('FL', 'FR', 'RL', 'RR'), 54),
+          'Wheel_Speeds': dict.fromkeys(('FL', 'FR', 'RL', 'RR'), 0 if stopped else 54),
           'Brake_Status': {'Brake': int(brake)},
           'CruiseControl': {'Cruise_On': int(main), 'Cruise_Activated': int(cruise)},
           'ES_Status': {'Cruise_Activated': int(cruise)},
@@ -197,6 +198,8 @@ def test_actual_full_engage_brake_reverse_temporary_recovery_mainoff(candidate, 
           'events': [str(e.name) for e in driven['onroadEvents'].onroadEvents],
         }
         rows.append(row)
+        if stopped:
+          assert not row['lat'] and row['cardLatch'] and row['permission'] == 0 and row['fault'] == 'none', row
         assert not command.longActive, row
         if 10 <= tick < 30:
           assert not command.latActive and not bool(intent and intent.allowedLatch) and row['permission'] == 0, row
@@ -218,3 +221,11 @@ def test_actual_full_engage_brake_reverse_temporary_recovery_mainoff(candidate, 
     finally:
       pandad.close()
       (tmp_path / (str(candidate) + '-' + str(aol) + '-actual.json')).write_text(json.dumps(rows, indent=2) + '\n')
+
+
+@pytest.mark.parametrize('candidate', [CAR.SUBARU_CROSSTREK_2025, CAR.SUBARU_LEGACY_2025, CAR.SUBARU_FORESTER, CAR.SUBARU_OUTBACK])
+def test_actual_stop_retains_lateral_intent_and_resumes(candidate, subaru_native_pair, tmp_path):
+  test_actual_full_engage_brake_reverse_temporary_recovery_mainoff(candidate, subaru_native_pair, tmp_path, stop_resume=True)
+  rows = json.loads((tmp_path / (str(candidate) + '-True-actual.json')).read_text())
+  commands = [command for row in rows if 185 <= row['tick'] < 195 for command in row['steering']]
+  assert commands and all(not command['request'] and command['nativeAccepted'] for command in commands)

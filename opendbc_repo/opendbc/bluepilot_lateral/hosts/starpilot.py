@@ -96,6 +96,10 @@ class Host:
     snapshot = self.inputs.lateral_snapshot(CS.out.vEgoRaw, angle=True) if self.inputs is not None else None
     model, times, delay, _ = snapshot if snapshot is not None else (None, (), 0.15, True)
     aol = self.cp.alternativeExperience == 32
+    # The host is constructed before AOL marks the final CarParams.
+    # Retained AOL keeps EPS engaged through release and tracking error;
+    # physical human-turn pauses and fault recovery remain independent.
+    self.controller.recovery_blips = not aol
     ordinary = CC.enabled and CS.out.cruiseState.enabled and not CS.out.gasPressed and not CS.out.brakePressed
     ready = (self.inputs is not None and self.inputs.native_permission(self.cp, max_age_ns=bounds.PANDA_AGE_NS) and
              (aol and CS.out.cruiseState.available or ordinary) and CC.latActive and CS.out.canValid and

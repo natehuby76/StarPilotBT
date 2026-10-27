@@ -278,7 +278,8 @@ class GlobalRuntime:
           raise ValueError('stale_original_source')
       if self.controller.sat_time > 0:
         raise ValueError('controller_saturation')
-      if not (sm.seen[receipt_service] and sm.alive[receipt_service] and sm.valid[receipt_service] and sm.freq_ok[receipt_service]):
+      if not (sm.seen[receipt_service] and sm.alive[receipt_service] and sm.valid[receipt_service] and
+              (live_delivery or sm.freq_ok[receipt_service])):
         raise ValueError('source_unavailable')
       received = int(round(sm.recv_time[receipt_service] * 1e9))
       if not 0 <= now_ns - received <= SOURCE_LEASE_NS:
@@ -322,6 +323,11 @@ class GlobalRuntime:
       self.eligible = bool(source.enabled and not source.manual and not self.live_manual and active and healthy)
       if not source.enabled or source.manual or self.live_manual or not active:
         raise ValueError('manual_or_off_or_inactive')
+      # Current configuration is enough to record the unchanged controller.
+      # A slow optional publisher must not stop the tape needed to learn.
+      # Frequency still gates EVERY trial, restore and legacy application below.
+      if live_delivery and not sm.freq_ok[receipt_service]:
+        raise ValueError('source_frequency_unavailable')
       live_offer, live_restore = self._current_live_trial(sm,envelope) if live_delivery else (None,None)
       if live_offer is not None and live_restore is not None:
         raise ValueError('simultaneous trial and history restore')

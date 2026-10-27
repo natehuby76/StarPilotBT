@@ -344,9 +344,6 @@ class LaneCenteringController:
     if self._body_required and (self._body is None or not self._body.valid):
       self.reset()
       return self._result(base, "unqualified_body")
-    if settings.pause_on_signal and observation.turn_signal_active:
-      self._tracker.reset()
-      return self._fade(base, dt, "signal_release")
     try:
       if observation.model.meta.laneChangeState != log.LaneChangeState.off:
         self.reset()
@@ -354,6 +351,9 @@ class LaneCenteringController:
     except (AttributeError, TypeError, ValueError):
       self.reset()
       return self._result(base, "invalid_model")
+    if settings.pause_on_signal and observation.turn_signal_active:
+      self._tracker.reset()
+      return self._fade(base, dt, "signal_release")
     # Filtering runs per control tick, including repeated model samples.
     geometry = _reader_geometry_key(observation.model)
     cache_key = (observation.model_sample_id, geometry)

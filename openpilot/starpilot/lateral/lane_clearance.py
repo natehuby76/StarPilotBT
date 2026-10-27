@@ -10,6 +10,7 @@ import numpy as np
 class BodyDimensions:
   width: float
   length: float
+  height: float | None = None
 
   @property
   def valid(self):
@@ -20,6 +21,7 @@ class BodyDimensions:
       and math.isfinite(self.length)
       and 1.3 <= self.width <= 2.6
       and 2.5 <= self.length <= 7.0
+      and (self.height is None or type(self.height) is float and math.isfinite(self.height) and 1.0 <= self.height <= 3.5)
     )
 
 
@@ -77,6 +79,63 @@ def _motion(curvature: float, measured: float, speed: float, delay: float, body:
   return x[:, None] + c * longitudinal - s * lateral, y[:, None] + s * longitudinal + c * lateral
 
 
+def _interval_body_bounds(curvature: float, measured: float, speed: float, delay: float, body: BodyDimensions):
+  """Enclose the piecewise-linear predicted motion in the calibrated frame.
+
+  Camera, motion reference and body points must be inside the supplied body
+  box. The forward axis is aligned with the car; initial roll may be unknown.
+  Future pitch/bank changes and positions outside observed edges are not modeled.
+  """
+  assert body.height is not None
+  x, y, heading = _center_motion(curvature, measured, speed, delay)
+  x0, y0, h0 = np.r_[0., x[:-1]], np.r_[0., y[:-1]], np.r_[0., heading[:-1]]
+  low, high = np.minimum(h0, heading), np.maximum(h0, heading)
+  sin_abs = np.maximum(np.abs(np.sin(low)), np.abs(np.sin(high)))
+  cos_low = np.minimum(np.cos(low), np.cos(high))
+  cos_abs = np.maximum(np.abs(np.cos(low)), np.abs(np.cos(high)))
+  sin_abs = np.where(np.ceil((low - math.pi / 2) / math.pi) <= np.floor((high - math.pi / 2) / math.pi), 1., sin_abs)
+  cos_abs = np.where(np.ceil(low / math.pi) <= np.floor(high / math.pi), 1., cos_abs)
+  cos_low = np.where(np.ceil((low - math.pi) / (2 * math.pi)) <= np.floor((high - math.pi) / (2 * math.pi)), -1., cos_low)
+  # For t + R - C + Yaw(P - R), these support bounds retain the unknown
+  # camera/reference lever arm. They do not treat the camera as an axle.
+  scale = (cos_abs + 2. - cos_low) / 2.
+  hx = body.length * scale + body.width * sin_abs
+  hy = body.width * scale + body.length * sin_abs
+  extent = np.hypot(np.maximum(np.abs(y0), np.abs(y)) + hy, body.height)
+  return np.minimum(x0, x) - hx, np.maximum(x0, x) + hx, extent
+
+
+def _interval_edge_margin(bounds, x, y, side):
+  lo, hi, extent = bounds
+  a = np.maximum(lo[:, None], x[:-1])
+  b = np.minimum(hi[:, None], x[1:])
+  slope = np.diff(y) / np.diff(x)
+  ay = y[:-1] + slope * (a - x[:-1])
+  by = y[:-1] + slope * (b - x[:-1])
+  separation = (-extent[:, None] - np.maximum(ay, by) if side == 0 else
+                np.minimum(ay, by) - extent[:, None]) / np.hypot(1., slope)
+  return np.min(np.where(a <= b, separation, np.inf), axis=1)
+
+
+def _limit_body_envelope(edges, base, correction, measured, speed, delay, body):
+  original = _interval_body_bounds(base, measured, speed, delay, body)
+  for factor in (1., .75, .5, .25):
+    candidate = _interval_body_bounds(base + correction * factor, measured, speed, delay, body)
+    accepted = True
+    for side, x, y, _, std in edges:
+      rows = (original[0] >= x[0]) & (original[1] <= x[-1])
+      if np.count_nonzero(rows) < 4 or not np.all((candidate[0][rows] >= x[0]) & (candidate[1][rows] <= x[-1])):
+        accepted = False
+        break
+      margin = _interval_edge_margin(candidate, x, y, side)[rows]
+      if not np.isfinite(margin).all() or np.min(margin) < .1 + std:
+        accepted = False
+        break
+    if accepted:
+      return correction * factor
+  return 0.
+
+
 def limit_tracking(path, base: float, correction: float, measured: float, speed: float, delay: float) -> float:
   """A line-tracking contribution must improve its predicted spacing objective."""
   if not all(math.isfinite(v) for v in (base, correction, measured, speed, delay)) or speed < 5.0 or not 0.0 <= delay <= 1.0:
@@ -97,7 +156,11 @@ def limit_tracking(path, base: float, correction: float, measured: float, speed:
 
 
 def limit_correction(model, base: float, correction: float, measured: float, speed: float, delay: float, body: BodyDimensions) -> float:
-  """Retain the largest tested correction that does not worsen edge intrusion.
+  """Check the added contribution against currently observed road edges.
+
+  Height-qualified bounds require absolute margin on covered predicted intervals.
+  Planar bounds retain the sampled planar intrusion check. Neither certifies
+  actual future motion or the body outside observed longitudinal coverage.
 
   This guards only the added lane contribution. The original model command and
   native curvature, jerk, authority and driver-override limits remain upstream.
@@ -122,11 +185,17 @@ def limit_correction(model, base: float, correction: float, measured: float, spe
       x, y = np.asarray(edge.x, dtype=float), np.asarray(edge.y, dtype=float)
       if x.ndim != 1 or y.ndim != 1 or len(x) < 2 or len(x) != len(y) or not np.isfinite(x).all() or not np.isfinite(y).all() or np.any(np.diff(x) <= 0):
         return 0.0
-      edges.append((index, x, y, np.gradient(y, x), std))
+      with np.errstate(over='ignore', invalid='ignore', divide='ignore'):
+        slope = np.gradient(y, x)
+      if not np.isfinite(slope).all():
+        return 0.0
+      edges.append((index, x, y, slope, std))
   except (AttributeError, IndexError, TypeError, ValueError, OverflowError):
     return 0.0
   if not edges:
     return correction
+  if body.height is not None:
+    return _limit_body_envelope(edges, base, correction, measured, speed, delay, body)
   original_x, original_y = _motion(base, measured, speed, delay, body)
   for factor in (1.0, 0.75, 0.5, 0.25):
     candidate_x, candidate_y = _motion(base + correction * factor, measured, speed, delay, body)

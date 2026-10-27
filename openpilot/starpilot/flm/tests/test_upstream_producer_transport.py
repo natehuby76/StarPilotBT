@@ -8,7 +8,7 @@ from openpilot.starpilot.flm import producer_clock_equivalence as clock
 
 
 APPROVED = {
-  'selfdrive/modeld/modeld.py': '3cbd9a9843716cf44832d6dd1cf4bef7fbc1facd02b9583b9b7db7e9abeb4c7b',
+  'selfdrive/modeld/modeld.py': '75f050328e073bdc2476da0172645093a8aa74179b7ec24990414fc4ec98fe69',
   'visionipc/visionipc_server.cc': 'a4325a5171eacb931eb271d06a992d2f27216040df113d92099f62cdfa67d81a',
   'visionipc/visionipc_client.cc': 'd142cd60eedabfc581e9770fcd6f0ca81b762ba9dbc608b54dd20a27a317a52d',
 }

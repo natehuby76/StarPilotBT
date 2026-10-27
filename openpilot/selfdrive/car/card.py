@@ -228,6 +228,7 @@ class Car:
     self.ioniq6_last_preflight_at = 0.0
     self.ioniq6_panda_armed = False
     self.ioniq6_host_warmed = False
+    self.ioniq6_handoff_source_floor_ns = 0
     self.ioniq6_long_lost = False
     self.ioniq6_keepalive = None
     self.ioniq6_restore_callbacks = None
@@ -574,7 +575,11 @@ class Car:
     if self.slc_replay:
       pending = slc_physical.pending_confirmation(
         self.sm, now_ns, long_active=slc_long_active, after_ns=floor_ns)
-    self.update_cruise_speed(CS, pending)
+    approved = (slc_physical.state_current(self.sm, observation, self.slc_producer_session, now_ns)
+                if self.v_cruise_helper.toyota is not None and self.slc_control_enabled else None)
+    if approved is not None and int(approved.frameMonoTime) <= floor_ns:
+      approved = None
+    self.update_cruise_speed(CS, pending, approved=approved)
     if self.controller_cruise_sock is not None:
       for _ in range(8):
         request = messaging.recv_one_or_none(self.controller_cruise_sock)
@@ -812,6 +817,8 @@ class Car:
           command, state, observation, self.slc_producer_session, now_ns, previous_mps,
           long_active=slc_long_active,
           button_event=intervening_button)
+        if self.v_cruise_helper.toyota is not None:
+          applicable = applicable and self.v_cruise_helper.toyota.can_apply(float(command.targetMps))
         if applicable:
           self.v_cruise_helper.apply_slc_target(float(command.targetMps), self.is_metric)
         self.slc_receipts.append(('commandApplied' if applicable else 'commandRejected', command,
@@ -831,9 +838,10 @@ class Car:
 
     return CS, RD
 
-  def update_cruise_speed(self, CS, pending=None):
+  def update_cruise_speed(self, CS, pending=None, *, approved=None):
     self.v_cruise_helper.update_v_cruise(CS, self.sm['carControl'].enabled, self.is_metric, pending,
-                                       slc_enabled=getattr(self, 'slc_control_enabled', getattr(self, 'slc_replay', False)))
+                                       slc_enabled=getattr(self, 'slc_control_enabled', getattr(self, 'slc_replay', False)),
+                                       slc_approved=approved)
     if self.sm['carControl'].enabled and not self.CC_prev.enabled:
       # Initialization owns this edge; evaluate commands against its final speed.
       self.v_cruise_helper.initialize_v_cruise(self.CS_prev, self.experimental_mode,
@@ -1094,6 +1102,11 @@ class Car:
     if self.CP.brand == 'mazda':
       from openpilot.starpilot.car.mazda.dashboard import compose
       companion = compose(self.CP, self.CI.CS, CS, companion, car_state_stamp=int(cs_send.logMonoTime))
+    if self.v_cruise_helper.toyota is not None:
+      if companion is None:
+        companion = messaging.new_message('starpilotCarState', valid=bool(cs_send.valid), logMonoTime=int(cs_send.logMonoTime))
+      companion.starpilotCarState.sourceCarStateMonoTime = int(cs_send.logMonoTime)
+      self.v_cruise_helper.toyota.publish(companion.starpilotCarState.toyotaCruise)
     self.car_gps_publisher.update(self.CI.CS, self.pm, companion)
     self.pm.send('carState', cs_send)
     if getattr(self, 'learning_stamp_observer', None) is not None:
@@ -1243,6 +1256,20 @@ class Car:
       }
       self.pm.send('slcCruiseEvent', event)
 
+  def ioniq6_post_handoff_sources_current(self):
+    """A parser's invalid grace is not proof of post-transaction warmup."""
+    from opendbc.can.parser import MAX_BAD_COUNTER
+    floor = getattr(self, 'ioniq6_handoff_source_floor_ns', 0)
+    if floor <= 0:
+      return False
+    now = time.clock_gettime_ns(time.CLOCK_BOOTTIME)
+    sources = [source for parser in self.CI.can_parsers.values()
+               for source in parser.message_states.values() if not source.ignore_alive]
+    return bool(sources) and all(
+      source.timestamps and floor < source.timestamps[-1] <= now and
+      now - source.timestamps[-1] <= source.timeout_threshold and source.counter_fail < MAX_BAD_COUNTER
+      for source in sources)
+
   def observe_ioniq6_long_authority(self, can_list, CS):
     if getattr(self, 'ioniq6_long_selected', False) and self.ioniq6_long_lost:
       CS.canValid = False
@@ -1252,10 +1279,11 @@ class Car:
     if any((src == 1 and address in (0x1A0, 0x1BA, 0x1E5)) or (src == 0 and address == 0x100)
            for _, packet in can_list for address, _, src in packet):
       self.ioniq6_long_lost = True
-    if CS.canValid:
+    if self.ioniq6_host_warmed:
+      if not CS.canValid:
+        self.ioniq6_long_lost = True
+    elif CS.canValid and self.ioniq6_post_handoff_sources_current():
       self.ioniq6_host_warmed = True
-    elif self.ioniq6_host_warmed:
-      self.ioniq6_long_lost = True
     if self.ioniq6_long_lost:
       CS.canValid = False
       if self.ioniq6_keepalive is not None:
@@ -1629,6 +1657,7 @@ class Car:
         # The transaction consumed Card's CAN cursor. Rewarm the host parser
         # from post-handoff independent inputs before its first controller TX.
         self.ioniq6_host_warmed = False
+        self.ioniq6_handoff_source_floor_ns = time.clock_gettime_ns(time.CLOCK_BOOTTIME)
         self.ioniq6_restore_callbacks = self.can_callbacks
       elif self.vehicle_startup.owner is None:
         self.CI.init(self.CP, *self.can_callbacks)

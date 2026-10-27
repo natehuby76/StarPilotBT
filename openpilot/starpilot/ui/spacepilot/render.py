@@ -18,6 +18,12 @@ GOLD = rl.Color(255, 207, 121, 255)
 EXIT = (938., 10., 118., 48.)
 
 
+def canvas_rect(rect: rl.Rectangle) -> rl.Rectangle:
+  scale = min(rect.width / 1072, rect.height / 480)
+  return rl.Rectangle(rect.x + (rect.width - 1072 * scale) / 2, rect.y + (rect.height - 480 * scale) / 2,
+                      1072 * scale, 480 * scale)
+
+
 class SpaceRenderer:
   def __init__(self):
     rng = random.Random(5683)
@@ -75,7 +81,27 @@ class SpaceRenderer:
     rl.draw_line_ex((-4, -7), (17, -1), 2, CYAN)
     rl.rl_pop_matrix()
 
-  def render(self, game: Flight, rect: rl.Rectangle, *, wheel_ready: bool) -> None:
+  def preparing(self, rect: rl.Rectangle, *, stopping: bool) -> None:
+    rl.draw_rectangle_rec(rect, INK)
+    rect = canvas_rect(rect)
+    rl.rl_push_matrix()
+    rl.rl_translatef(rect.x, rect.y, 0)
+    rl.rl_scalef(rect.width / 1072, rect.height / 480, 1)
+    try:
+      rl.draw_rectangle_gradient_v(0, 0, 1072, 480, rl.Color(16, 20, 48, 255), INK)
+      self.text('SpacePilot', 536, 109, 62, centered=True, bold=True)
+      self.text('Entering parked game mode' if stopping else 'Checking physical Park', 536, 211, 27, CYAN, centered=True)
+      self.text('Waiting for driving services to stop' if stopping else 'Keep the car in Park and release the wheel buttons',
+                536, 265, 21, MUTED, centered=True)
+      self.text('Driving services stay off until you select Onroad or Auto again.', 536, 362, 19, MUTED, centered=True)
+      self.panel(*EXIT, rl.Color(30, 43, 62, 255))
+      self.text('EXIT', 997, 19, 22, centered=True, bold=True)
+    finally:
+      rl.rl_pop_matrix()
+
+  def render(self, game: Flight, rect: rl.Rectangle, *, wheel_ready: bool, wheel_available: bool = True) -> None:
+    rl.draw_rectangle_rec(rect, INK)
+    rect = canvas_rect(rect)
     rl.rl_push_matrix()
     rl.rl_translatef(rect.x, rect.y, 0)
     rl.rl_scalef(rect.width / 1072, rect.height / 480, 1)
@@ -110,16 +136,18 @@ class SpaceRenderer:
       self.text('EXIT', 997, 19, 22, centered=True, bold=True)
       rl.draw_rectangle(0, 439, 1072, 41, INK)
       rl.draw_line(0, 438, 1072, 438, rl.Color(46, 66, 88, 255))
-      self.text('P  /  STATIONARY', 22, 450, 16, CYAN)
-      self.text('TAP OR + / – TO BOOST', 1050 - measure_text_cached(gui_app.font(), 'TAP OR + / – TO BOOST', 16).x, 450, 16, MUTED)
+      self.text('P  /  DRIVING SERVICES OFF', 22, 450, 16, CYAN)
+      hint = 'TAP OR + / – TO BOOST' if wheel_available else 'TOUCH OR PAIRED CONTROLLER'
+      self.text(hint, 1050 - measure_text_cached(gui_app.font(), hint, 16).x, 450, 16, MUTED)
       if game.phase == Phase.READY:
         self.ship(247, 234 + math.sin(game.age * 2.2) * 8, -8 + math.sin(game.age * 1.4) * 4, game.age, scale=2.7)
         self.text('A LITTLE ESCAPE', 675, 100, 18, CYAN, centered=True)
         self.text('SpacePilot', 675, 139, 62, centered=True, bold=True)
         self.text('Thread the gates. Chase the stars.', 675, 224, 22, MUTED, centered=True)
         self.panel(395, 286, 560, 60, rl.Color(38, 80, 103, 255))
-        self.text('Press +/– or tap to start', 675, 300, 27, centered=True, bold=True)
-        self.text('Release each wheel button once to arm it' if not wheel_ready else 'One press. One boost. Find your rhythm.',
+        self.text('Press +/– or tap to start' if wheel_available else 'Tap to start', 675, 300, 27, centered=True, bold=True)
+        self.text(('Release each wheel button once to arm it' if not wheel_ready else 'One press. One boost. Find your rhythm.')
+                  if wheel_available else 'Controller: use your mapped +/– buttons.',
                   675, 369, 18, MUTED, centered=True)
       elif game.phase == Phase.OVER:
         self.panel(326, 99, 450, 306, rl.Color(10, 19, 37, 245))
@@ -127,6 +155,6 @@ class SpaceRenderer:
         self.text(f'{game.score:02d}', 551, 147, 73, centered=True, bold=True)
         self.text(f'GATES CLEARED   /   BEST {game.best:02d}', 551, 244, 19, MUTED, centered=True)
         self.panel(356, 301, 390, 67, rl.Color(38, 80, 103, 255))
-        self.text('Press +/– or tap to retry', 551, 321, 23, centered=True, bold=True)
+        self.text('Press +/– or tap to retry' if wheel_available else 'Tap to retry', 551, 321, 23, centered=True, bold=True)
     finally:
       rl.rl_pop_matrix()

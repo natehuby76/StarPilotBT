@@ -327,7 +327,7 @@ class FullrateCollector:
       or type(value.control_ns) is not int
       or type(value.state_ns) is not int
       or not 0 < value.state_ns <= value.control_ns <= now_ns
-      or value.control_ns - value.state_ns > JOIN_NS
+      or value.domain != 'normalized_torque' and value.control_ns - value.state_ns > JOIN_NS
       or not 1 <= len(value.features) <= 8
       or not all(finite(v) for v in (value.requested, value.baseline_prediction, *value.features, *value.applied_coordinates))
       or len(value.stage_values) > 40
@@ -410,9 +410,9 @@ class FullrateCollector:
     ):
       self.split('ineligible_control')
       return False
-    if now_ns - value.control_ns > MAX_AGE_NS:
-      # Expiry alone rejects this row, but may retain an already suspended
-      # numerical study. Explicit original native refusal is not a timing gap.
+    if now_ns - value.control_ns > MAX_AGE_NS or value.control_ns - value.state_ns > JOIN_NS:
+      # Receiver or normalized source-state delay still rejects this row.
+      # Only inert study data may survive; native refusal is not a timing gap.
       if value.native_required and (not value.native_allowed or not identity(value.native_identity) or
           not 0 < value.native_observed_ns <= value.control_ns <= value.native_expires_ns <= value.native_observed_ns + 200_000_000):
         self.split('original_native_admission_unavailable')
@@ -518,6 +518,11 @@ class FullrateCollector:
     current_sources = (consumed_sources_current(command, output) if command.domain == 'normalized_torque' else
                        command.state_ns <= output.state_ns <= output.apply_ns and output.state_ns - command.state_ns <= JOIN_NS)
     if not current_sources:
+      from openpilot.starpilot.flm.unchanged_output import redundant_late_output
+      if redundant_late_output(self, command, output):
+        # The original on-time pair remains untouched. This repeat creates no
+        # ready row, sample, application time, physical witness or permission.
+        return
       # This pair is unusable, but it does not change the identity/provenance
       # of independently sealed historical samples. Withdraw current admission
       # and discard the partial window; real context changes still hard-reset.

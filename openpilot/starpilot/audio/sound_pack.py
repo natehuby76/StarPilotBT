@@ -264,6 +264,29 @@ def tici_speaker_samples(samples: np.ndarray) -> np.ndarray:
   return output
 
 
+def tici_disengage_samples(samples: np.ndarray) -> np.ndarray:
+  """Lighten the existing disengage chime at load time, preserving its timing."""
+  taps = np.arange(2049, dtype=np.float64) - 1024
+  lowpass = 2 * 700 / 48000 * np.sinc(2 * 700 / 48000 * taps) * np.hamming(len(taps))  # codespell:ignore sinc
+  lowpass /= lowpass.sum()
+  bass = np.convolve(samples, lowpass, mode="full")[1024:1024 + len(samples)]
+  result = samples.astype(np.float64) - 0.65 * bass
+  elapsed = np.arange(len(samples)) / 48000
+  result *= np.exp(-np.maximum(elapsed - 0.25, 0))
+  fade_frames = min(240, len(samples) // 2)
+  if fade_frames:
+    fade = 0.5 - 0.5 * np.cos(np.linspace(0, np.pi, fade_frames))
+    result[:fade_frames] *= fade
+    result[-fade_frames:] *= fade[::-1]
+  original_peak = float(np.max(np.abs(samples)))
+  filtered_peak = float(np.max(np.abs(result)))
+  if filtered_peak > original_peak:
+    result *= original_peak / filtered_peak
+  output = result.astype(np.float32)
+  output.flags.writeable = False
+  return output
+
+
 class SoundPackLoader:
   def __init__(self, params, stock: Path, root: Path = PACK_ROOT, *, device_type: str = ""):
     self.device_type = device_type
@@ -307,6 +330,8 @@ class SoundPackLoader:
             builtin_loaded[builtin] = read_wav(self.stock.parent / "sounds_starpilot" / builtin)
             if self.device_type == "tici":
               builtin_loaded[builtin] = tici_speaker_samples(builtin_loaded[builtin])
+              if builtin == "disengage.wav":
+                builtin_loaded[builtin] = tici_disengage_samples(builtin_loaded[builtin])
           selected = builtin_loaded[builtin]
           self.builtin_sounds[builtin] = selected
         except (OSError, EOFError, ValueError, wave.Error):

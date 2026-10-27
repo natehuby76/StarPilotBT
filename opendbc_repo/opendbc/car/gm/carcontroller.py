@@ -267,6 +267,7 @@ class CarController(CarControllerBase):
     self.long_pitch_input = None
     self.bolt_removed_cancel_credit_used = 0
     self.bolt_pedal_removed = is_bolt_pedal_removed_profile(CP) or is_bolt_pedal_removed_profile(CP, stock_only=True)
+    self.bolt_steering_ack_counter = is_bolt_pedal_profile(CP) or is_bolt_pedal_profile(CP, stock_only=True)
     self.bolt_present_no_acc_stock = is_bolt_present_no_acc_pedal_profile(CP, stock_only=True)
     self.truck_tuning = TruckTuning() if truck_tuning_supported(CP) else None
     self.truck_tuning_input = None
@@ -604,7 +605,11 @@ class CarController(CarControllerBase):
       if CS.loopback_lka_steering_cmd_ts_nanos == 0 or out_of_sync:
         steer_step = self.params.STEER_STEP
 
-    self.lka_steering_cmd_counter += 1 if CS.loopback_lka_steering_cmd_updated else 0
+    if self.bolt_steering_ack_counter:
+      if CS.loopback_lka_steering_cmd_updated:
+        self.lka_steering_cmd_counter = (CS.loopback_lka_steering_cmd_counter + 1) % 4
+    else:
+      self.lka_steering_cmd_counter += 1 if CS.loopback_lka_steering_cmd_updated else 0
 
     # Avoid GM EPS faults when transmitting messages too close together: skip this transmit if we
     # received the ASCMLKASteeringCmd loopback confirmation too recently

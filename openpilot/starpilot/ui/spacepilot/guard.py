@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 import math
+import time
 from typing import Any
 
 from openpilot.starpilot.parked_evidence import PANDA_TTL_NS, RESUME_SKEW_NS
@@ -12,19 +13,33 @@ DWELL_NS = 1_000_000_000
 SERVICES = ('carState', 'selfdriveState', 'carControl', 'deviceState', 'pandaStates')
 
 
+def sample_clocks() -> tuple[int, int]:
+  """Discard a preempted clock read, never widen evidence or resume tolerances."""
+  for _ in range(3):
+    before = time.monotonic_ns()
+    boot = time.clock_gettime_ns(time.CLOCK_BOOTTIME)
+    after = time.monotonic_ns()
+    if before <= 0 or boot <= 0 or after < before:
+      raise ValueError('Device clock moved backwards or is unavailable')
+    if after - before <= 1_000_000:
+      return after, boot
+  raise ValueError('Waiting for a stable device clock')
+
+
 @dataclass(frozen=True)
 class Witness:
   mono_ns: int
   boot_ns: int
   stamps: tuple[int, ...]
   buttons: tuple[tuple[str, bool], ...]
+  mode: str = 'onroad'
 
 
 def read_witness(ui: Any, mono_ns: int, boot_ns: int, *, c4: bool) -> Witness | None:
   """Original message and receipt clocks must both be fresh; Panda uses BOOTTIME.
 
-  The supported onroad producers must remain running. Force Offroad stops them,
-  so it is neither an admission signal nor a resource-management option here.
+  This proves the pre-transition state only. Offroad gameplay uses independent
+  CAN plus actual process shutdown and physical noOutput evidence below.
   """
   try:
     if (not c4 or mono_ns <= 0 or boot_ns <= 0 or not ui.started or ui.CP is None or ui.CP.notCar or
@@ -73,7 +88,7 @@ class ParkGate:
     if witness is None:
       self.reset()
       return False
-    if previous is not None and (not 0 <= witness.mono_ns - previous.mono_ns <= FAST_AGE_NS or
+    if previous is not None and (witness.mode != previous.mode or not 0 <= witness.mono_ns - previous.mono_ns <= FAST_AGE_NS or
                                  abs((witness.boot_ns - witness.mono_ns) - (previous.boot_ns - previous.mono_ns)) > RESUME_SKEW_NS or
                                  any(new < old for new, old in zip(witness.stamps, previous.stamps, strict=True))):
       self.reset()
@@ -82,3 +97,54 @@ class ParkGate:
       self.since = witness.mono_ns
     self.ready = witness.mono_ns - self.since >= DWELL_NS
     return self.ready
+
+
+DRIVING_PROCESSES = frozenset(('card', 'selfdrived', 'controlsd', 'modeld', 'dmonitoringmodeld'))
+
+
+def read_offroad_witness(ui: Any, mono_ns: int, boot_ns: int, *, native_device: bool, vehicle=None, preparing: bool = False) -> Witness | None:
+  """Require actual quiet processes and healthy physical noOutput, not a mode request.
+
+  preparing=True may open only the verification screen, never gameplay. Its
+  independent decoder must prove Park before the full witness can be admitted.
+  Ignition-off uses the same physical parked premise as the existing native
+  parked-action owner. With ignition on, a live independent CAN decoder must
+  continue proving Park/zero speed; a remembered pre-transition value is invalid.
+  """
+  try:
+    if (not native_device or ui.started or ui.projection_read_only or ui.replay_clock is not None or
+        getattr(ui.sm, 'replay_sample', None) is not None or not ui.params.get_bool('IsOffroad')):
+      return None
+    sm = ui.sm
+    stamps = []
+    for name in ('deviceState', 'pandaStates', 'managerState'):
+      ttl = PANDA_TTL_NS if name == 'pandaStates' else SLOW_AGE_NS
+      stamp, received = int(sm.logMonoTime[name]), float(sm.recv_time[name])
+      now = boot_ns if name == 'pandaStates' else mono_ns
+      if (not sm.valid[name] or not sm.alive[name] or stamp <= 0 or not 0 <= now - stamp <= ttl or
+          not math.isfinite(received) or not 0 <= mono_ns - int(received * 1e9) <= ttl):
+        return None
+      stamps.append(stamp)
+    if sm['deviceState'].started or str(sm['deviceState'].thermalStatus) != 'ok':
+      return None
+    processes = tuple(sm['managerState'].processes)
+    names = [p.name for p in processes]
+    if len(names) != len(set(names)) or not DRIVING_PROCESSES.issubset(names):
+      return None
+    if any(p.running for p in processes if p.name in DRIVING_PROCESSES):
+      return None
+    pandas = tuple(sm['pandaStates'])
+    if not pandas:
+      return None
+    for panda in pandas:
+      if (str(panda.pandaType) == 'unknown' or str(panda.safetyModel) != 'noOutput' or panda.controlsAllowed or
+          panda.heartbeatLost or panda.safetyRxChecksInvalid or str(panda.faultStatus) != 'none' or len(panda.faults)):
+        return None
+    ignition = any(p.ignitionLine or p.ignitionCan for p in pandas)
+    if ignition and not preparing:
+      if (any(str(p.harnessStatus) == 'notConnected' for p in pandas) or vehicle is None or
+          not vehicle.ready(mono_ns, boot_ns)):
+        return None
+    return Witness(mono_ns, boot_ns, tuple(stamps), (), 'offroad-check' if ignition and preparing else 'offroad')
+  except (AttributeError, KeyError, TypeError, ValueError, OverflowError, OSError, RuntimeError):
+    return None

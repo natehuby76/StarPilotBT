@@ -3,7 +3,7 @@
 Google Play listing: **Galaxy: StarPilot Companion**  
 Last updated: October 25, 2026
 
-**Galaxy: StarPilot Companion** is the Android companion app for [StarPilot](https://github.com/firestar5683/StarPilot), open-source driving software based on openpilot. The app appears as **Galaxy** on your phone and displays the Galaxy interface served by StarPilot.
+**Galaxy: StarPilot Companion** is the Android companion app for [StarPilot](https://github.com/StarPilotHQ/StarPilot), open-source driving software based on openpilot. The app appears as **Galaxy** on your phone and displays the Galaxy interface served by StarPilot.
 
 ## Data used
 

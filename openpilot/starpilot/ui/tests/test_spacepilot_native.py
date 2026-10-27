@@ -33,9 +33,11 @@ def page(monkeypatch):
   monkeypatch.setattr(native, 'live_witness', lambda: read(parked_ui()))
   monkeypatch.setattr(native.time, 'monotonic', lambda: 10.)
   monkeypatch.setattr(native.time, 'monotonic_ns', lambda: 10_000_000_000)
-  wheel = Mock()
-  wheel.poll.return_value = False
-  monkeypatch.setattr(native, 'WheelReader', lambda _: wheel)
+  game = Mock(stage=native.Stage.PLAYING, reason='', vehicle=Mock(), wheel=Mock(armed=set()), ignition_return=None)
+  game.step.return_value = False
+  game.playable.return_value = True
+  game.close.side_effect = lambda *_a: setattr(game, 'stage', native.Stage.CLOSED)
+  monkeypatch.setattr(native, 'GameSession', lambda *_a, **_k: game)
   widget = native.SpacePilotPage(mature_gate(), Mock())
   widget.set_rect(rl.Rectangle(0, 0, 536, 240))
   monkeypatch.setattr(gui_app, 'get_active_widget', lambda: widget)
@@ -54,10 +56,10 @@ def test_native_touch_starts_hold_does_not_repeat_exit_and_cleanup(page):
   assert page.flight.vy == 10
   page._handle_mouse_event(MouseEvent(MousePos(160, 120), 0, False, True, False, 10.1))
   page._handle_mouse_press(MousePos(500, 20))
-  wheel = page.wheel
+  game = page.session
   page._handle_mouse_event(MouseEvent(MousePos(500, 20), 0, False, True, False, 10.2))
-  assert page.closed and page.wheel is None
-  wheel.close.assert_called_once()
+  assert page.closed and page.session.stage == native.Stage.CLOSED
+  game.close.assert_called_once()
   gui_app.pop_widget.assert_called_once()
   assert page._tick not in gui_app._nav_stack_ticks
   assert not page.flight.gates
@@ -65,18 +67,13 @@ def test_native_touch_starts_hold_does_not_repeat_exit_and_cleanup(page):
 
 @pytest.mark.parametrize('reason', ['stale', 'hidden', 'backlog', 'no_socket'])
 def test_safety_exit_reveals_main_and_never_renders_or_continues_input(page, monkeypatch, reason):
-  wheel = page.wheel
-  if reason == 'stale':
-    monkeypatch.setattr(native, 'live_witness', lambda: None)
-  elif reason == 'hidden':
+  if reason == 'hidden':
     monkeypatch.setattr(gui_app, 'get_active_widget', lambda: object())
-  elif reason == 'backlog':
-    wheel.poll.side_effect = ValueError('backlog')
   else:
-    page.wheel = None
+    page.session.step.side_effect = lambda: setattr(page.session, 'stage', native.Stage.CLOSED)
   page._tick()
   page.on_unsafe.assert_called_once()
-  assert page.closed and page.wheel is None
+  assert page.closed and page.session.stage == native.Stage.CLOSED
   page.renderer = Mock()
   page._render(page.rect)
   page.renderer.render.assert_not_called()
@@ -85,10 +82,10 @@ def test_safety_exit_reveals_main_and_never_renders_or_continues_input(page, mon
 
 
 def test_wheel_only_observes_admitted_game_and_drives_same_action(page):
-  page.wheel.poll.return_value = True
+  page.session.step.return_value = True
   page._tick()
   assert page.flight.phase == Phase.FLIGHT
-  page.wheel.poll.assert_called_once_with(10_000_000_000)
+  page.session.step.assert_called_once_with()
 
 
 def test_optional_render_failure_returns_to_native_alerts(page, monkeypatch):
@@ -96,7 +93,7 @@ def test_optional_render_failure_returns_to_native_alerts(page, monkeypatch):
   page.renderer.render.side_effect = RuntimeError('GL fixture failure')
   monkeypatch.setattr(native.cloudlog, 'exception', Mock())
   page._render(page.rect)
-  assert page.closed and page.wheel is None
+  assert page.closed and page.session.stage == native.Stage.CLOSED
   page.on_unsafe.assert_called_once()
 
 
@@ -145,52 +142,6 @@ def test_version_sequence_resets_on_interruption(monkeypatch, interruption):
     version._process_mouse_events()
   assert version.taps.count == 0
   pushed.assert_not_called()
-
-
-def car_event(stamp, *, pressed=None, kind='accelCruise'):
-  event = messaging.new_message('carState', valid=True)
-  event.logMonoTime = stamp
-  event.carState.canValid = True
-  event.carState.standstill = True
-  event.carState.gearShifter = 'park'
-  if pressed is not None:
-    event.carState.buttonEvents = [{'type': kind, 'pressed': pressed}]
-  return event.as_reader()
-
-
-def test_nonconflated_reader_retains_short_press_release_and_closes(monkeypatch):
-  socket = Mock()
-  subscribe = Mock(return_value=socket)
-  monkeypatch.setattr(messaging, 'sub_sock', subscribe)
-  reader = native.WheelReader(1_000_000_000)
-  subscribe.assert_called_once_with('carState', conflate=False)
-  messages = iter([car_event(1_010_000_000, pressed=False), car_event(1_020_000_000, pressed=True),
-                   car_event(1_030_000_000, pressed=False), None])
-  monkeypatch.setattr(messaging, 'recv_one_or_none', lambda _: next(messages))
-  assert reader.poll(1_040_000_000)
-  assert 'accelCruise' in reader.input.armed
-  reader.close()
-  assert reader.socket is None and not reader.input.armed
-
-
-@pytest.mark.parametrize('fault', ['stale', 'future', 'invalid', 'drive', 'moving', 'backlog'])
-def test_reader_rejects_untrustworthy_queued_input(monkeypatch, fault):
-  monkeypatch.setattr(messaging, 'sub_sock', Mock())
-  reader = native.WheelReader(1_000_000_000)
-  message = car_event(1_100_000_000).as_builder()
-  if fault == 'future':
-    message.logMonoTime = 2_000_000_000
-  elif fault == 'invalid':
-    message.valid = False
-  elif fault == 'drive':
-    message.carState.gearShifter = 'drive'
-  elif fault == 'moving':
-    message.carState.vEgo = 2.
-  messages = iter([message.as_reader(), None])
-  monkeypatch.setattr(messaging, 'recv_one_or_none', lambda _: message.as_reader() if fault == 'backlog' else next(messages))
-  with pytest.raises(ValueError):
-    reader.poll(1_500_000_000 if fault == 'stale' else 1_110_000_000)
-  reader.close()
 
 
 def test_five_tap_native_value_region_movement_and_page_reset(monkeypatch):
@@ -256,3 +207,105 @@ def test_developer_installs_version_gesture_only_for_c4_with_exit_owner(monkeypa
   monkeypatch.setattr(gui_app, 'font', lambda *_a: rl.Font())
   panel = developer.DeveloperLayoutMici(on_spacepilot_exit=Mock() if has_owner else None)
   assert sum(isinstance(item, native.VersionButton) for item in panel._scroller.items) == expected
+
+
+def test_entry_gate_does_not_share_background_settings_reset(page):
+  gate = mature_gate()
+  new_page = native.SpacePilotPage(gate, Mock())
+  gate.reset()
+  assert new_page.gate.ready
+  new_page.session.close()
+
+
+def test_preparation_never_starts_game_and_exit_works(page):
+  page.session.stage = native.Stage.STOPPING
+  page._handle_mouse_press(MousePos(160, 120))
+  assert page.flight.phase == Phase.READY
+  page._handle_mouse_event(MouseEvent(MousePos(160, 120), 0, False, True, False, 10.1))
+  page._handle_mouse_press(MousePos(500, 20))
+  page._handle_mouse_event(MouseEvent(MousePos(500, 20), 0, False, True, False, 10.2))
+  assert page.closed
+
+
+def test_controller_start_debounce_and_unsafe_input_isolated(page):
+  page.capture_controller(native.INCREASE_SPEED, 10_100_000_000)
+  assert page.flight.phase == Phase.FLIGHT
+  page.flight.vy = 10
+  page.capture_controller(native.DECREASE_SPEED, 10_110_000_000)
+  assert page.flight.vy == 10
+  page.capture_controller('unrelated.action', 10_400_000_000)
+  assert page.flight.vy == 10
+  page.session.playable.return_value = False
+  page.capture_controller(native.INCREASE_SPEED, 10_600_000_000)
+  assert page.closed
+
+
+def test_big_ui_canvas_preserves_aspect_and_exit_target(page):
+  from openpilot.starpilot.ui.spacepilot.render import canvas_rect
+  page.set_rect(rl.Rectangle(0, 0, 2160, 1080))
+  canvas = canvas_rect(page.rect)
+  assert canvas.width / canvas.height == pytest.approx(1072 / 480)
+  assert canvas.y > 0
+  assert page._in_exit(MousePos(canvas.x + 997 * canvas.width / 1072, canvas.y + 25 * canvas.height / 480))
+  assert not page._in_exit(MousePos(997, 25))
+
+
+def test_real_nav_stack_launch_survives_background_gesture_reset(monkeypatch, page):
+  version = Mock()
+  root = Mock()
+  monkeypatch.setattr(gui_app, '_nav_stack', [root, version])
+  monkeypatch.setattr(gui_app, 'get_active_widget', type(gui_app).get_active_widget.__get__(gui_app))
+  monkeypatch.setattr(gui_app, 'pop_widget', type(gui_app).pop_widget.__get__(gui_app))
+  game = native.SpacePilotPage(mature_gate(), Mock())
+  gui_app.push_widget(game)
+  assert gui_app.get_active_widget() is game
+  version.set_enabled.assert_called_once_with(False)
+  game._tick()
+  assert not game.closed
+  gui_app.pop_widget()
+  assert game.closed and game._tick not in gui_app._nav_stack_ticks
+
+
+@pytest.mark.parametrize('timeout', [5, 30, 60])
+@pytest.mark.parametrize('finish', ['exit', 'unsafe', 'render_failure', 'stopped_ticks'])
+def test_game_wake_renews_actual_device_timeout_and_releases(page, monkeypatch, timeout, finish):
+  from openpilot.selfdrive.ui import ui_state as display
+  from openpilot.starpilot.ui.display_preferences import DisplayPreferences
+  clock = [10.]
+  state = NS(started=False, ignition=True, projection_read_only=False, sm=NS(valid={}, alive={}))
+  monkeypatch.setattr(display, 'ui_state', state)
+  monkeypatch.setattr(native, 'ui_state', state)
+  monkeypatch.setattr(display, 'PC', False)
+  monkeypatch.setattr(display.HARDWARE, 'set_display_power', Mock())
+  monkeypatch.setattr(gui_app, 'set_should_render', Mock())
+  monkeypatch.setattr(native.time, 'monotonic', lambda: clock[0])
+  device = display.Device()
+  device._display_preferences = DisplayPreferences(enabled=True, parked_timeout=timeout)
+  monkeypatch.setattr(native, 'device', device, raising=False)
+  callback = Mock()
+  device.add_interactive_timeout_callback(callback)
+  device._reset_interactive_timeout()
+  # No touch or controller event renews this timer; the actual active page does.
+  for _ in range(150):
+    clock[0] += .5
+    device._update_wakefulness()
+    page._tick()
+    assert device.awake
+    assert device.interactive_timeout == timeout
+    assert device._override_interactive_timeout is None
+  callback.assert_not_called()
+  if finish == 'exit':
+    page._exit(unsafe=False)
+  elif finish == 'unsafe':
+    page.session.step.side_effect = lambda: setattr(page.session, 'stage', native.Stage.CLOSED)
+    page._tick()
+  elif finish == 'render_failure':
+    page.renderer = Mock(render=Mock(side_effect=RuntimeError('fixture render failure')))
+    page._render(page.rect)
+  # A halted caller renews nothing even if it never receives hide_event.
+  clock[0] += timeout + .01
+  device._update_wakefulness()
+  assert not device.awake
+  assert device.interactive_timeout == timeout and device._override_interactive_timeout is None
+  callback.assert_called_once()
+  assert page.closed or finish == 'stopped_ticks'
