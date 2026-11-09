@@ -60,6 +60,7 @@ from opendbc.car.ford.aol import (
   temporary_restriction as ford_temporary_restriction,
 )
 from opendbc.car.hyundai.canfd_angle_aol import native_observation, temporary_restriction, qualified as qualified_angle_aol
+from opendbc.car.hyundai.blended_stock_aol import qualified_alpha as qualified_blended_alpha_aol
 from opendbc.car.hyundai.canfd_owner import config_index as hyundai_canfd_config_index
 from opendbc.car.hyundai.captured_adrv_startup import CapturedADRVStartup
 from openpilot.starpilot.car.nissan.aol import (
@@ -615,9 +616,10 @@ class Car:
         self.aol_card_intent, cancel_source_ns=cancel_source_ns, now_ns=now_ns,
         producer=getattr(self, 'slc_producer_session', ''))
       cancel_feedback = self.aol_transport_feedback
-      if (hkg_cancel_retained and self.CP.carFingerprint in (HYUNDAI_CAR.KIA_EV9, HYUNDAI_CAR.HYUNDAI_IONIQ_5_PE) and
+      if (hkg_cancel_retained and (self.CP.carFingerprint in (HYUNDAI_CAR.KIA_EV9, HYUNDAI_CAR.HYUNDAI_IONIQ_5_PE) or
+          qualified_blended_alpha_aol(self.CP, marked_only=True)) and
           cancel_feedback is not None and not cancel_feedback.longitudinal_cancel_ns):
-        # The pure guard proved this exact CCNC raw CANCEL/FULL join. Bind
+        # The pure guard proved this exact raw CANCEL/FULL join. Bind
         # its first local receipt for the existing bounded withdrawal handshake;
         # held samples never renew it or any source/native/output deadline.
         if cancel_source_ns > cancel_feedback.last_cancel_source_ns:
@@ -1044,21 +1046,35 @@ class Car:
       self.pm.send('carParams', cp_send)
       self.car_params_published = True
 
+    timing = getattr(self, '_cycle_timing', None)
+    if timing is not None:
+      timing.publication_mark('begin')
+
     # publish new carOutput
     co_send = messaging.new_message('carOutput')
     co_send.valid = self.sm.all_checks(['carControl'])
     co_send.carOutput.actuatorsOutput = self.last_actuators_output
     self.learning_feedback_publication = None
+    if timing is not None:
+      timing.publication_mark('car_output_create')
     capture = self._feedback_capture(int(co_send.logMonoTime))
+    if timing is not None:
+      timing.publication_mark('feedback_capture')
     if capture is not None:
       try:
         self.learning_feedback_publication = capture.publication(co_send)
       except Exception:
         capture.invalidate()  # Optional observation cannot affect the original CO.
+    if timing is not None:
+      timing.publication_mark('feedback_publication')
     self.pm.send('carOutput', co_send)
+    if timing is not None:
+      timing.publication_mark('car_output_send')
 
     # kick off controlsd step while we actuate the latest carControl packet
     cs_send = messaging.new_message('carState')
+    if timing is not None:
+      timing.publication_mark('car_state_create')
     if (self.slc_replay or self.curve_replay or getattr(self, 'conditional_replay', False)) and REPLAY and hasattr(self, 'can_log_mono_time'):
       cs_send.logMonoTime = int(self.can_log_mono_time)
     cs_send.valid = CS.canValid

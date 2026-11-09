@@ -300,7 +300,7 @@ class VisionModelCore:
       raise RuntimeError("OpenCV DNN is unavailable")
     self.is_metric = is_metric
     self.last_classifier_reject_dominant = False
-    self.net = self._load_net("speed_limit_us_detector.onnx", self.DETECTOR_SHA256)
+    self.net = self._load_detector_net()
     self.classifier_net = (self._load_net("speed_limit_us_value_classifier.onnx", self.CLASSIFIER_SHA256)
                            if load_classifier else None)
     if not load_classifier:
@@ -342,6 +342,9 @@ class VisionModelCore:
     self.published_support_count = 0
     self.episode = 0
 
+  def _load_detector_net(self):
+    return self._load_net("speed_limit_us_detector.onnx", self.DETECTOR_SHA256)
+
   @classmethod
   def _verified_model_path(cls, name: str, expected_sha256: str) -> Path:
     path = cls.ASSET_DIR / name
@@ -373,7 +376,12 @@ class VisionModelCore:
   def infer(self, frame_bgr: np.ndarray) -> Detection | None:
     if frame_bgr.ndim != 3 or frame_bgr.shape[2] != 3 or frame_bgr.size == 0:
       raise ValueError("Expected a nonempty BGR frame")
-    return self._publishable_detection(self._detect_sign_from_detector_classifier(frame_bgr))
+    face_filter = getattr(self, '_speed_face_filter', None)
+    try:
+      return self._publishable_detection(self._detect_sign_from_detector_classifier(frame_bgr))
+    finally:
+      if face_filter is not None:
+        face_filter.end_frame()
 
   def observe(self, frame_bgr: np.ndarray, *, now: float) -> tuple[int, float, int, int] | None:
     """Return the confirmed sign numeral in the configured units until reset or replacement."""
@@ -607,6 +615,9 @@ class VisionModelCore:
     detector_shape = (self.detector_input_size, self.detector_input_size)
     letterboxed, ratio, pad_width, pad_height = self._letterbox(frame_bgr, shape=detector_shape)
     blob = cv2.dnn.blobFromImage(letterboxed, scalefactor=1 / 255.0, size=detector_shape, swapRB=True, crop=False)
+    face_filter = getattr(self, '_speed_face_filter', None)
+    if face_filter is not None:
+      face_filter.capture_blob(blob)
     self.net.setInput(blob)
 
     forward_started_at = time.monotonic()
@@ -661,11 +672,17 @@ class VisionModelCore:
         continue
 
       candidates.append((confidence, class_id, (x1, y1, x2, y2)))
+      face_filter = getattr(self, '_speed_face_filter', None)
+      if face_filter is not None:
+        face_filter.remember((confidence, class_id, (x1, y1, x2, y2)), prediction[:4], index)
 
     return candidates
 
 
   def _collect_detector_classifier_proposals(self, frame_bgr):
+    face_filter = getattr(self, '_speed_face_filter', None)
+    if face_filter is not None:
+      face_filter.begin_frame()
     if self.net is None:
       return []
 
@@ -887,6 +904,10 @@ class VisionModelCore:
         if class_id == 2:
           is_regulatory = True
 
+        face_filter = getattr(self, '_speed_face_filter', None)
+        if face_filter is not None and face_filter.reject_once((proposal_confidence, class_id, (x1, y1, x2, y2))):
+          self.latest_detector_proposal = None
+          return None
         model_read = self._classify_speed_limit_from_model(sign_crop)
         if not any((expand_left, expand_top, expand_right, expand_bottom)):
           primary_reject_dominant = bool(
