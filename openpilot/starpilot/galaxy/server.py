@@ -738,6 +738,10 @@ def make_server(*, port=8082, host='127.0.0.1', monitor=None, owner=None, crashe
       if not self.local_request():
         return
       path = urlsplit(self.path).path
+      if path == '/api/companion/carplay-live':
+        from openpilot.starpilot.galaxy.carplay_live import serve
+        serve(self)
+        return
       if path.startswith(('/api/replay/', '/api/recordings/')) and not self.direct_local():
         self.json(403, {'error': 'Routes require a local Galaxy connection', 'code': 'local_only'})
         return
