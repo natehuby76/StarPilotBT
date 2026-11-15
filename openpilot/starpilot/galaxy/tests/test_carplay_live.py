@@ -1,10 +1,15 @@
 import importlib.util
 import io
+import json
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import socket
 import sys
 import types
+import threading
 import unittest
+import urllib.error
+import urllib.request
 from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('carplay_live', Path(__file__).parents[1] / 'carplay_live.py')
@@ -129,6 +134,64 @@ class CarPlayLiveTests(unittest.TestCase):
 
     with patch.object(live, 'frames', frames), self.assertLogs(live._log, level='ERROR'):
       live.serve(Handler())
+    self.assert_slot_released()
+
+  def test_http_stream_framing_and_missing_cookie(self):
+    """Exercise the actual HTTP response and binary stream over a TCP socket.
+
+    This fixture supplies an isolated session; Galaxy's session implementation
+    is deliberately not replaced in production.
+    """
+    class HTTPHandler(BaseHTTPRequestHandler):
+      def do_GET(self):
+        live.serve(self)
+
+      def direct_local(self):
+        return True
+
+      def settings_session(self):
+        return ('fixture', 'generation') if self.headers.get('Cookie') == 'fixture=yes' else None
+
+      def require_session(self):
+        if self.settings_session() is None:
+          self.json(401, {'error': 'Missing session'})
+          return False
+        return True
+
+      def json(self, code, value):
+        data = json.dumps(value).encode()
+        self.send_response(code)
+        self.send_header('Content-Length', str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+      def log_message(self, *_):
+        pass
+
+    records = [live.packet(b'', 0, 0, 0, 0), live.packet(b'\0\0\0\1\x65test', 17, 1234, 2.5, 12.5)]
+    def source(authorized, connected):
+      self.assertTrue(authorized())
+      self.assertTrue(connected())
+      yield from records
+
+    server = ThreadingHTTPServer(('127.0.0.1', 0), HTTPHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    url = f'http://127.0.0.1:{server.server_port}{live.PATH}'
+    try:
+      with patch.object(live, 'frames', source):
+        with self.assertRaises(urllib.error.HTTPError) as failed:
+          urllib.request.urlopen(url, timeout=3)
+        self.assertEqual(failed.exception.code, 401)
+        request = urllib.request.Request(url, headers={'Cookie': 'fixture=yes'})
+        with urllib.request.urlopen(request, timeout=3) as response:
+          self.assertEqual(response.headers.get_content_type(), live.CONTENT_TYPE)
+          self.assertEqual(response.headers.get('Cache-Control'), 'no-store')
+          self.assertEqual(response.read(), b''.join(records))
+    finally:
+      server.shutdown()
+      server.server_close()
+      thread.join(timeout=3)
     self.assert_slot_released()
 
   def test_peer_close_detected(self):
