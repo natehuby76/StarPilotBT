@@ -20,6 +20,10 @@ spec.loader.exec_module(live)
 class Connection:
   def __init__(self):
     self.timeout = None
+    self.options = []
+
+  def setsockopt(self, level, option, value):
+    self.options.append((level, option, value))
 
   def gettimeout(self):
     return self.timeout
@@ -124,6 +128,8 @@ class CarPlayLiveTests(unittest.TestCase):
     self.assertEqual(handler.wfile.getvalue(), b'first frame')
     self.assertTrue(handler.close_connection)
     self.assertEqual(handler.connection.timeout, None)
+    self.assertIn((socket.IPPROTO_TCP, socket.TCP_NODELAY, 1), handler.connection.options)
+    self.assertIn((socket.SOL_SOCKET, socket.SO_SNDBUF, 64 * 1024), handler.connection.options)
     self.assertEqual(closed, [True])
     self.assert_slot_released()
 

@@ -114,6 +114,10 @@ def serve(handler):
   stream = None
   try:
     original_timeout = handler.connection.gettimeout()
+    # Small dependent pictures must leave immediately rather than wait for a
+    # delayed TCP acknowledgement. Keep the socket's outbound queue bounded.
+    handler.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    handler.connection.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 64 * 1024)
     handler.connection.settimeout(3)
     handler.close_connection = True
     handler.send_response(200)
