@@ -163,6 +163,10 @@ class OnroadView:
       self.steering_wheel = SteeringWheelWidget(asset_directory)
       from openpilot.starpilot.ui.onroad_jetlink import JetlinkStatusWidget
       self.jetlink_status = JetlinkStatusWidget(fonts)
+      from openpilot.starpilot.ui.onroad_signal import SignalWidget
+      self.network_signal = SignalWidget(fonts)
+      from openpilot.starpilot.ui.onroad_uniden import UnidenWidget
+      self.uniden = UnidenWidget(fonts)
     else:
       self.compact_hud = CompactHudRenderer(fonts, asset_directory)
       self.compact_sidebar = MiciSidebarWidgets(fonts)
@@ -176,10 +180,14 @@ class OnroadView:
 
 
   def render(self, state: OnroadState) -> None:
+    if uniden := getattr(self, "uniden", None):
+      uniden.feed.set_enabled(uniden.runtime_active)
     if state.camera_available and self.camera_layer is None:
       raise ValueError("Camera observation requires a camera renderer")
     if self.fonts.profile == Profile.LARGE:
       self._large(state)
+      if uniden := getattr(self, "uniden", None):
+        uniden.render_border(state, *(self.projection_viewport or (state.viewport_width, 1080)))
     else:
       self._compact(state)
 
@@ -319,9 +327,15 @@ class OnroadView:
       if "now_playing" in state.customization["layouts"]["large"]:
         if now_playing := getattr(self, "now_playing", None):
           submit("now_playing", lambda: now_playing.render(state))
+      if "uniden_alerts" in state.customization["layouts"]["large"]:
+        if uniden := getattr(self, "uniden", None):
+          submit("uniden_alerts", lambda: uniden.render(state))
       if "jetlink_status" in state.customization["layouts"]["large"]:
         if jetlink := getattr(self, "jetlink_status", None):
           submit("jetlink_status", lambda: jetlink.render(state))
+      if "network_signal" in state.customization["layouts"]["large"]:
+        if signal := getattr(self, "network_signal", None):
+          submit("network_signal", lambda: signal.render(state))
       if "car_exit" in state.customization["layouts"]["large"]:
         if exit_layer := getattr(self, "projection_exit_layer", None):
           submit("car_exit", lambda: exit_layer(state))
@@ -440,8 +454,12 @@ class OnroadView:
           self.navigation_favorites.render(key, state)
         if now_playing := getattr(self, "now_playing", None):
           now_playing.render(state)
+        if uniden := getattr(self, "uniden", None):
+          uniden.render(state)
         if jetlink := getattr(self, "jetlink_status", None):
           jetlink.render(state)
+        if signal := getattr(self, "network_signal", None):
+          signal.render(state)
         self._driving_mode(state, right_shift / 2)
         self._clock(state, right_shift / 2)
         self._weather(state, right_shift / 2)

@@ -5,11 +5,14 @@ import math
 from openpilot.cereal import log
 from openpilot.common.constants import CV
 
-from openpilot.starpilot.navigation.wire import navigation_state
+from openpilot.starpilot.navigation.wire import PHONE_CONTROL_AGE_NS, PHONE_PASSED_SLACK_M, is_phone_navigation, navigation_state
 
 SERVICE = 'starpilotNavigation'
 MAX_AGE_NS = 2_500_000_000
+SMOOTH_CEILING_CAR = 'HONDA_CIVIC_2022'
 TARGET_MPH = {'uturn': 5., 'sharpLeft': 10., 'sharpRight': 10., 'left': 14., 'right': 14.}
+LEFT, RIGHT = ('left', 'sharpLeft'), ('right', 'sharpRight')
+STOP_LEFT_MPS = 3.  # faster than this after a stop, a new stop request is a new approach
 
 
 def current_instruction(sm, now_ns: int):
@@ -22,7 +25,8 @@ def current_instruction(sm, now_ns: int):
         not 0 < nav.frameMonoTime <= stamp <= now_ns <= nav.frameMonoTime + MAX_AGE_NS or
         not sm.valid['deviceState'] or not sm.alive['deviceState'] or not device.started or
         not 0 < device.startedMonoTime == nav.startedMonoTime <= device_stamp <= now_ns <= device_stamp + 2_000_000_000 or
-        not nav.startedMonoTime <= nav.locationMonoTime <= now_ns <= nav.locationMonoTime + MAX_AGE_NS):
+        not nav.startedMonoTime <= nav.locationMonoTime <= now_ns <= nav.locationMonoTime +
+            (PHONE_CONTROL_AGE_NS if is_phone_navigation(nav) else MAX_AGE_NS)):
       return None
     for service in ('carState', 'carControl'):
       source = sm.logMonoTime[service]
@@ -36,6 +40,27 @@ def current_instruction(sm, now_ns: int):
     return None
 
 
+def instruction_distance(nav, instruction, v_ego: float, now_ns: int, *, advance: bool = False) -> float:
+  # Phone guidance advances from its fix; asked to, routed guidance advances from its publish (about 1 Hz).
+  distance = instruction.distanceMeters
+  phone = is_phone_navigation(nav)
+  if (phone or advance) and math.isfinite(distance) and math.isfinite(v_ego):
+    driven = max(0., v_ego) * max(0., now_ns - (nav.locationMonoTime if phone else nav.frameMonoTime)) * 1e-9
+    # Well past the reported turn with no newer notification: the guidance no longer applies.
+    return math.inf if phone and driven > distance + PHONE_PASSED_SLACK_M else max(0., distance - driven)
+  return distance
+
+
+def turn_side(nav, instruction, cs) -> str:
+  """The side the driver is signalling, when it is the instructed one. An arrow-only phone turn is confirmed
+  at its junction but carries no side, so there the signal alone chooses it."""
+  if instruction.maneuverType != 'turn' or cs.leftBlinker == cs.rightBlinker:
+    return ''
+  side = 'left' if cs.leftBlinker else 'right'
+  modifier = instruction.maneuverModifier
+  return side if modifier in (LEFT if cs.leftBlinker else RIGHT) or (not modifier and is_phone_navigation(nav)) else ''
+
+
 def turn_desire(sm, now_ns: int, current_desire, *, supported: bool):
   if not supported or current_desire != log.Desire.none:
     return current_desire
@@ -43,28 +68,58 @@ def turn_desire(sm, now_ns: int, current_desire, *, supported: bool):
   if nav is None:
     return current_desire
   cs, cc, instruction = sm['carState'], sm['carControl'], nav.instruction
+  distance = instruction_distance(nav, instruction, cs.vEgo, now_ns, advance=True)
   if (not cc.latActive or cs.standstill or not math.isfinite(cs.vEgo) or not 0 <= cs.vEgo < 14 or
-      instruction.maneuverType != 'turn' or not math.isfinite(instruction.distanceMeters) or
-      not 0 <= instruction.distanceMeters <= min(90., max(35., cs.vEgo * 6.))):
+      instruction.maneuverType != 'turn' or not math.isfinite(distance) or
+      not 0 <= distance <= min(90., max(35., cs.vEgo * 6.))):
     return current_desire
-  if instruction.maneuverModifier in ('left', 'sharpLeft') and cs.leftBlinker and not cs.rightBlinker and not cs.leftBlindspot:
+  side = turn_side(nav, instruction, cs)
+  if side == 'left' and not cs.leftBlindspot:
     return log.Desire.turnLeft
-  if instruction.maneuverModifier in ('right', 'sharpRight') and cs.rightBlinker and not cs.leftBlinker and not cs.rightBlindspot:
+  if side == 'right' and not cs.rightBlindspot:
     return log.Desire.turnRight
   return current_desire
 
 
-def turn_speed(maneuver, min_steer_speed: float) -> float | None:
+def turn_target(maneuver, min_steer_speed: float) -> float | None:
   kind, modifier = maneuver.maneuverType, maneuver.maneuverModifier
-  target = TARGET_MPH.get(modifier) if kind == 'turn' else None
+  target = TARGET_MPH.get(modifier or 'left') if kind == 'turn' else None
   if modifier == 'uturn' or 'uturn' in kind or 'u-turn' in kind:
     target = 5.
   elif 'roundabout' in kind or 'rotary' in kind:
     target = 12.
-  if target is None or not math.isfinite(maneuver.distanceMeters) or maneuver.distanceMeters < 0:
+  if target is None:
     return None
-  target = max(target * CV.MPH_TO_MS, min_steer_speed)
-  return math.sqrt(target * target + 2 * .45 * max(0., maneuver.distanceMeters - 8.))
+  return max(target * CV.MPH_TO_MS, min_steer_speed)
+
+
+def turn_speed(maneuver, min_steer_speed: float, distance: float | None = None) -> float | None:
+  target = turn_target(maneuver, min_steer_speed)
+  distance = maneuver.distanceMeters if distance is None else distance
+  if target is None or not math.isfinite(distance) or distance < 0:
+    return None
+  return math.sqrt(target * target + 2 * .45 * max(0., distance - 8.))
+
+
+def smooth_turn_ceiling(CP) -> bool:
+  # Route distance only refreshes about once a second, which stepped the cap and pulsed the brakes.
+  return getattr(CP, 'brand', None) == 'honda' and getattr(CP, 'carFingerprint', None) == SMOOTH_CEILING_CAR
+
+
+def smoothed_turn_speed(maneuver, min_steer_speed: float, nav, v_ego: float, now_ns: int) -> float | None:
+  # Advance the last routed distance by the distance driven since that location fix.
+  distance = maneuver.distanceMeters
+  if not math.isfinite(distance) or distance < 0 or not math.isfinite(v_ego):
+    return None
+  if is_phone_navigation(nav) and not math.isfinite(instruction_distance(nav, maneuver, v_ego, now_ns)):
+    return None
+  distance = max(0., distance - max(0., v_ego) * max(0., now_ns - nav.locationMonoTime) * 1e-9)
+  profile = turn_speed(maneuver, min_steer_speed, distance)
+  target = turn_target(maneuver, min_steer_speed)
+  if profile is None or target is None or v_ego <= profile or distance - 8. <= 1.:
+    return profile
+  # Above the profile (e.g. after a gas override), brake only as hard as reaching the turn speed requires.
+  return max(profile, v_ego - (v_ego * v_ego - target * target) / (2 * (distance - 8.)))
 
 
 def cruise_ceiling(sm, CP, now_ns: int, cruise_mps: float) -> float | None:
@@ -78,11 +133,16 @@ def cruise_ceiling(sm, CP, now_ns: int, cruise_mps: float) -> float | None:
   minimum = float(CP.minSteerSpeed)
   if not math.isfinite(minimum):
     return None
+  smooth = smooth_turn_ceiling(CP)
+  ceiling = None
   for instruction in (nav.instruction, nav.nextManeuver):
-    target = turn_speed(instruction, max(minimum, 0.))
-    if target is not None and target + .25 < cruise_mps:
-      return target
-  return None
+    if smooth:
+      target = smoothed_turn_speed(instruction, max(minimum, 0.), nav, cs.vEgo, now_ns)
+    else:
+      target = turn_speed(instruction, max(minimum, 0.), instruction_distance(nav, instruction, cs.vEgo, now_ns))
+    if target is not None and target + .25 < cruise_mps and (ceiling is None or target < ceiling):
+      ceiling = target
+  return ceiling
 
 
 def matching_turn_signal(sm, now_ns: int, *, supported: bool) -> bool:
@@ -90,11 +150,39 @@ def matching_turn_signal(sm, now_ns: int, *, supported: bool) -> bool:
   if nav is None:
     return False
   cs, instruction = sm['carState'], nav.instruction
-  matching = ((instruction.maneuverModifier in ('left', 'sharpLeft') and cs.leftBlinker and not cs.rightBlinker) or
-              (instruction.maneuverModifier in ('right', 'sharpRight') and cs.rightBlinker and not cs.leftBlinker))
-  return bool(instruction.maneuverType == 'turn' and matching and math.isfinite(cs.vEgo) and
-              math.isfinite(instruction.distanceMeters) and
-              0 <= instruction.distanceMeters <= min(250., max(30., 15. + max(0., cs.vEgo) * 12.)))
+  distance = instruction_distance(nav, instruction, cs.vEgo, now_ns, advance=True)
+  return bool(turn_side(nav, instruction, cs) and in_signal_range(distance, cs.vEgo))
+
+
+def in_signal_range(distance: float, v_ego: float) -> bool:
+  return bool(math.isfinite(v_ego) and math.isfinite(distance) and
+              0 <= distance <= min(250., max(30., 15. + max(0., v_ego) * 12.)))
+
+
+def turn_cue(sm, CP, now_ns: int) -> str:
+  """Display only: what route advice is doing or waiting for. Model turn support and stop holds are not visible here."""
+  nav = current_instruction(sm, now_ns)
+  if nav is None:
+    return ''
+  try:
+    cs, cc, instruction = sm['carState'], sm['carControl'], nav.instruction
+    distance = instruction_distance(nav, instruction, cs.vEgo, now_ns, advance=True)
+    if instruction.maneuverType == 'turn' and cc.latActive and not cs.standstill and in_signal_range(distance, cs.vEgo):
+      side = turn_side(nav, instruction, cs)
+      if side:
+        if cs.leftBlindspot if side == 'left' else cs.rightBlindspot:
+          return 'blindspot'
+        return 'assist' if turn_desire(sm, now_ns, log.Desire.none, supported=True) != log.Desire.none else 'ready'
+      modifier = instruction.maneuverModifier
+      if cs.leftBlinker == cs.rightBlinker and (modifier in LEFT + RIGHT or (not modifier and is_phone_navigation(nav))):
+        return 'signalLeft' if modifier in LEFT else 'signalRight' if modifier in RIGHT else 'signal'
+    # The planner applies the ceiling only while its own longitudinal control is engaged.
+    if (sm['selfdriveState'].enabled and str(sm['controlsState'].longControlState) != 'off' and math.isfinite(cs.vEgo) and
+        cruise_ceiling(sm, CP, now_ns, max(0., cs.vEgo) + .25) is not None):
+      return 'slowing'
+  except (KeyError, AttributeError, TypeError, ValueError):
+    pass
+  return ''
 
 
 class TurnIntent:
@@ -107,12 +195,13 @@ class TurnIntent:
     self.signal_stop_completed = False
     self.key = None
     self.stop_hold = False
+    self.stop_completed = False
 
   def select(self, sm, now_ns: int, current_desire, *, supported: bool, model_stop: bool):
     nav = current_instruction(sm, now_ns) if supported else None
     key = (nav.sessionId, nav.startedMonoTime) if nav is not None else None
     if key != self.key:
-      self.key, self.stop_hold = key, False
+      self.key, self.stop_hold, self.stop_completed = key, False, False
     if nav is None:
       return self.signal_desire(sm, now_ns, current_desire, supported=supported, model_stop=model_stop)
     cs = sm['carState']
@@ -123,10 +212,17 @@ class TurnIntent:
                     nav.startedMonoTime <= plan.modelMonoTime <= stamp)
     except (KeyError, AttributeError, TypeError):
       plan_valid = False
-    if cs.standstill or cs.leftBlinker == cs.rightBlinker:
+    if cs.standstill:
+      self.stop_hold, self.stop_completed = False, True
+    elif cs.leftBlinker == cs.rightBlinker:
       self.stop_hold = False
     elif model_stop or (plan_valid and plan.shouldStop):
       self.stop_hold = True
+    elif self.stop_completed:
+      # Pulling away, the stop request lags standstill and flickers; it holds only until it clears.
+      self.stop_hold = False
+    if self.stop_completed and not self.stop_hold and not cs.standstill and cs.vEgo > STOP_LEFT_MPS:
+      self.stop_completed = False
     if self.stop_hold or not plan_valid:
       return current_desire
     selected = turn_desire(sm, now_ns, current_desire, supported=supported)

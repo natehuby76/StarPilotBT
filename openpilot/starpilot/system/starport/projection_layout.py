@@ -6,9 +6,11 @@ from pathlib import Path
 
 from openpilot.starpilot.system.starport.identity import DATA_DIR
 from openpilot.starpilot.system.starport.display_profile import screen_geometry
-from openpilot.starpilot.ui.onroad_customization import (CEM_GAUGE_WIDGET, CLOCK_WIDGET, JETLINK_WIDGET, MODE_WIDGET,
+from openpilot.starpilot.ui.onroad_customization import (CEM_GAUGE_WIDGET, CLOCK_WIDGET, JETLINK_WIDGET, MODE_WIDGET, SIGNAL_OPACITY, SIGNAL_WIDGET,
+                                                         SIGNAL_SCALE_RANGE, SIGNAL_SIZES, UNIDEN_WIDGET, UNIDEN_DISPLAY_FIELDS,
                                                          STOPPED_TIMER_WIDGET, WEATHER_WIDGET, CEM_GAUGE_FRAME, CEM_GAUGE_INSET, MAP_MIN_SIZE, NAV_CARD_SIZE,
-                                                         SPEED_ALIGNMENTS, customization_metadata, validate_map_box, validate_widget_order)
+                                                         SPEED_ALIGNMENTS, customization_metadata, signal_size, valid_signal_scale, valid_uniden_display,
+                                                         validate_map_box, validate_widget_order)
 from openpilot.starpilot.ui.onroad_stopped_timer import timer_size
 from openpilot.starpilot.ui.onroad_torque_geometry import maximum_footprint
 from openpilot.starpilot.ui.onroad_customization import (SPEED_LAYOUT_V7, migrate_speed_layout, migrate_large_sign_layout, migrate_attached_actions_gap,
@@ -37,10 +39,11 @@ NOW_PLAYING_SIZES = {'small': NOW_PLAYING_SIZE, 'big': (640, 264)}
 NOW_PLAYING_OPACITY = (0, 100, 85)
 JETLINK_SIZE = (420, 84)
 JETLINK_OPACITY = (0, 100, 85)
-CARD_WIDGETS = {NOW_PLAYING_WIDGET: NOW_PLAYING_OPACITY, JETLINK_WIDGET: JETLINK_OPACITY}
+CARD_WIDGETS = {NOW_PLAYING_WIDGET: NOW_PLAYING_OPACITY, JETLINK_WIDGET: JETLINK_OPACITY, SIGNAL_WIDGET: SIGNAL_OPACITY}
 # StarPort widgets the comma also draws as real editor sprites; the map stays a sketch.
-SPRITE_WIDGETS = (NAV_CARD, *DISPLAY_WIDGETS, STOPPED_TIMER_WIDGET, NOW_PLAYING_WIDGET, JETLINK_WIDGET, CAR_EXIT)
-PROJECTION_WIDGETS = (NAV_CARD, NAV_MAP, *DISPLAY_WIDGETS, STOPPED_TIMER_WIDGET, NOW_PLAYING_WIDGET, JETLINK_WIDGET, CAR_EXIT, 'following_distance')
+SPRITE_WIDGETS = (NAV_CARD, *DISPLAY_WIDGETS, STOPPED_TIMER_WIDGET, NOW_PLAYING_WIDGET, JETLINK_WIDGET, SIGNAL_WIDGET, UNIDEN_WIDGET, CAR_EXIT)
+PROJECTION_WIDGETS = (NAV_CARD, NAV_MAP, *DISPLAY_WIDGETS, STOPPED_TIMER_WIDGET, NOW_PLAYING_WIDGET, JETLINK_WIDGET, SIGNAL_WIDGET, UNIDEN_WIDGET, CAR_EXIT,
+                      'following_distance')
 
 
 class ProjectionLayoutSource:
@@ -81,6 +84,7 @@ def layout_metadata_for_viewport(viewport):
   widgets[MODE_WIDGET]['default']['x'] += (width - 1860) / 2
   widgets[CLOCK_WIDGET]['default']['x'] += (width - 1860) / 2
   widgets['steering_wheel']['default']['x'] += width - 1860
+  widgets[SIGNAL_WIDGET]['default']['x'] += width - 1860
   widgets['driver_monitor']['default']['y'] += height - 1080
   widgets['following_distance']['default']['y'] += height - 1080
   x, y, w, h = maximum_footprint(30, 30, width - 60, height - 60, width)
@@ -118,9 +122,9 @@ def layout_metadata_for_viewport(viewport):
                                  'collapseToggle': True, 'sizes': {name: list(size) for name, size in NOW_PLAYING_SIZES.items()},
                                  'default': {'x': width - 30 - NOW_PLAYING_SIZE[0], 'y': height - 30 - NOW_PLAYING_SIZE[1],
                                              'enabled': True, 'opacity': NOW_PLAYING_OPACITY[2], 'collapse': False, 'size': 'small'}}
-  widgets[JETLINK_WIDGET] = {'label': 'Jetlink status', 'kind': JETLINK_WIDGET,
+  widgets[JETLINK_WIDGET] = {'label': 'Big model', 'kind': JETLINK_WIDGET,
                              'width': JETLINK_SIZE[0], 'height': JETLINK_SIZE[1], 'colors': {},
-                             'note': 'Shown while Jetlink is on: connection, device and host processing time. Opacity sets the card background.',
+                             'note': "Big or small model driving, and Jetlink's or the Chestnut's state (else Disconnected). Opacity sets the card background.",
                              'opacity': {'min': JETLINK_OPACITY[0], 'max': JETLINK_OPACITY[1], 'default': JETLINK_OPACITY[2]},
                              'default': {'x': 30, 'y': 650, 'enabled': False, 'opacity': JETLINK_OPACITY[2]}}
   exit_w, exit_h = CAR_EXIT_SIZE
@@ -200,12 +204,16 @@ def now_playing_size(placement):
 def placement_size(key, widget, placement):
   if key == NOW_PLAYING_WIDGET:
     return now_playing_size(placement)
+  if key == SIGNAL_WIDGET:
+    return signal_size(placement)
   if key in DISPLAY_WIDGETS and placement.get('display') == 'icons':
     return FAVORITE_ICON_SIZE, FAVORITE_ICON_SIZE
   if widget.get('resizable'):
     return (placement.get('size', widget['resizable']['default']),) * 2
   if key == NAV_MAP:
     return placement['width'], placement['height']
+  if key == UNIDEN_WIDGET and type(placement.get('scale')) is int:
+    return round(widget['width'] * placement['scale'] / 100), round(widget['height'] * placement['scale'] / 100)
   return widget['width'], widget['height']
 
 
@@ -261,6 +269,12 @@ def validate_layout_for_viewport(value, viewport, *, _legacy_geometry=False):
   bounds = metadata['bounds']
   for key, widget in metadata['widgets'].items():
     placement = result['widgets'][key]
+    if key == UNIDEN_WIDGET and type(placement) is dict:
+      placement.setdefault('transparency', 8)
+      placement.setdefault('hide_when_no_alert', True)
+      placement.setdefault('hide_quiet_ride', False)
+      placement.setdefault('hide_mute_memory', False)
+      placement.setdefault('scale', 100)
     if key in DISPLAY_WIDGETS and type(placement) is dict:
       placement.setdefault('display', 'words')
     if key in ACTION_WIDGETS and type(placement) is dict:
@@ -273,6 +287,11 @@ def validate_layout_for_viewport(value, viewport, *, _legacy_geometry=False):
     if key == NOW_PLAYING_WIDGET and type(placement) is dict:
       placement.setdefault('collapse', False)
       placement.setdefault('size', 'small')
+    if key == SIGNAL_WIDGET and type(placement) is dict:
+      placement.setdefault('size', 'ring')
+      placement.setdefault('scale', SIGNAL_SCALE_RANGE[2])
+      placement.setdefault('bluetooth', True)
+      placement.setdefault('wifiName', False)
     if key == 'driver_monitor' and type(placement) is dict and 'size' not in placement:
       for axis in ('x', 'y'):
         if type(placement.get(axis)) in (int, float):
@@ -286,9 +305,13 @@ def validate_layout_for_viewport(value, viewport, *, _legacy_geometry=False):
               ({'opacity', 'background'} if key in ACTION_WIDGETS else set()) |
               ({'opacity'} if key == 'cruise_limits' or key in CARD_WIDGETS else set()) |
               ({'collapse', 'size'} if key == NOW_PLAYING_WIDGET else set()) |
+              ({'size', 'scale', 'bluetooth', 'wifiName'} if key == SIGNAL_WIDGET else set()) |
+              (UNIDEN_DISPLAY_FIELDS if key == UNIDEN_WIDGET else set()) |
               ({'width', 'height', 'opacity'} if key == NAV_MAP else set()))
     if type(placement) is not dict or set(placement) != fields or type(placement['enabled']) is not bool:
       raise ValueError('Invalid projection widget')
+    if key == UNIDEN_WIDGET and not valid_uniden_display(placement):
+      raise ValueError('Invalid Uniden display settings')
     if widget.get('required') is True and placement['enabled'] is not True:
       raise ValueError('Required projection widget is disabled')
     if key in DISPLAY_WIDGETS and placement['display'] not in ('words', 'icons'):
@@ -305,6 +328,14 @@ def validate_layout_for_viewport(value, viewport, *, _legacy_geometry=False):
       raise ValueError('Invalid now playing collapse setting')
     if key == NOW_PLAYING_WIDGET and (type(placement['size']) is not str or placement['size'] not in NOW_PLAYING_SIZES):
       raise ValueError('Invalid now playing size')
+    if key == SIGNAL_WIDGET and (type(placement['size']) is not str or placement['size'] not in SIGNAL_SIZES):
+      raise ValueError('Invalid signal style')
+    if key == SIGNAL_WIDGET and not valid_signal_scale(placement):
+      raise ValueError('Invalid signal scale')
+    if key == SIGNAL_WIDGET and type(placement['bluetooth']) is not bool:
+      raise ValueError('Invalid signal bluetooth setting')
+    if key == SIGNAL_WIDGET and type(placement['wifiName']) is not bool:
+      raise ValueError('Invalid signal Wi-Fi name setting')
     if key == CAR_EXIT and placement['opacity'] < CAR_EXIT_MIN_OPACITY:
       raise ValueError('Exit to car opacity must be at least 25%')
     if widget.get('resizable'):
@@ -331,8 +362,8 @@ def validate_layout_for_viewport(value, viewport, *, _legacy_geometry=False):
         type(placement[axis]) in (int, float) and math.isfinite(placement[axis]) and
         bounds[axis] <= placement[axis] <= bounds[axis] + bounds[extent] - dimension
         for (axis, extent), dimension in zip((('x', 'width'), ('y', 'height')), pair, strict=True))), dimensions)
-    if key == NOW_PLAYING_WIDGET:
-      # A larger card size may overhang a saved spot; pull it back in.
+    if key in (UNIDEN_WIDGET, NOW_PLAYING_WIDGET, SIGNAL_WIDGET):
+      # A larger scale or card size may overhang a saved spot; pull it back in.
       for (axis, extent), dimension in zip((('x', 'width'), ('y', 'height')), dimensions, strict=True):
         if type(placement[axis]) in (int, float) and math.isfinite(placement[axis]):
           placement[axis] = min(placement[axis], bounds[axis] + bounds[extent] - dimension)

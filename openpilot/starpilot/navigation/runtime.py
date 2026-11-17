@@ -12,7 +12,7 @@ from openpilot.starpilot.navigation.google_routes import (
   GoogleRouteEngine, GoogleRoutesFailed, essentials_budget, route_budget, write_route_status,
 )
 
-from openpilot.starpilot.gps.phone import read_phone_gps
+from openpilot.starpilot.gps.phone import phone_gps_status, read_phone_gps
 from openpilot.starpilot.gps.source import GPS_MAX_AGE_NS, GPS_SERVICES, bearing, select_location
 
 ARRIVED_NS = 5_000_000_000      # stopped at the destination this long shows "You have arrived"
@@ -32,6 +32,9 @@ UNJOINED_REROUTE_M = 300.       # before joining, only this far from where the r
 
 def location(sm, now_ns: int, phone_fix=None):
   fix = select_location(sm, now_ns, phone_fix=phone_fix)
+  if fix is not None and now_ns > fix[0] + GPS_MAX_AGE_NS:
+    # A phone fix held past the route's control age; a fresh comma or car fix keeps progress moving.
+    fix = select_location(sm, now_ns, mode="comma") or fix
   if fix is None:
     return None
   stamp, gps = fix
@@ -162,7 +165,8 @@ class RouteRuntime:
       return result
     progress = self.route.progress(coordinates, speed, bearing)
     fresh = now_ns <= stamp + GPS_MAX_AGE_NS
-    off_route = fresh and progress.off_route and self._may_reroute(coordinates, progress, selected)
+    may_reroute = self._may_reroute(coordinates, progress, selected)
+    off_route = fresh and progress.off_route and may_reroute
     self.off_route_since = (self.off_route_since or now_ns) if off_route else 0
     arriving = progress.arrived or (speed is not None and speed < 2 and
                                     distance(coordinates, (selected['longitude'], selected['latitude'])) < STOPPED_RADIUS_M)
@@ -291,13 +295,41 @@ def publish_status(pm, value: dict, phone_fix=None) -> None:
   pm.send('starpilotNavigation', message)
 
 
+def phone_gps_line(status) -> tuple | None:
+  """Why phone fixes are or are not arriving, as a change-only log key; counts and timing ride along unkeyed."""
+  if status is None:
+    return None
+  stale = status['receivedAgeMs'] > 10_000
+  return ('silent' if stale else status['reason'], bool(status['usable']))
+
+
+def corroborate(local_map, sm, phone, drive_id: int, now_ns: int, boot_offset_ns: int) -> None:
+  """Junction evidence is only read while a phone is guiding, once per published frame, and never across drives."""
+  changed = bool(drive_id and local_map.drive and drive_id != local_map.drive)
+  local_map.drive = drive_id or local_map.drive
+  if (phone is None or changed) and (local_map.last_event_ns or local_map.held is not None or local_map.odometer):
+    local_map.reset()
+  if phone is not None:
+    local_map.update(sm['mapdOut'], valid=sm.valid['mapdOut'], event_boot_ns=sm.logMonoTime['mapdOut'],
+                     received=sm.updated['mapdOut'], alive=sm.alive['mapdOut'], now_boot_ns=now_ns + boot_offset_ns)
+
+
 def main():
   from openpilot.cereal import messaging
   from openpilot.common.realtime import Ratekeeper
   from openpilot.common.swaglog import cloudlog
   owner = NavigationOwner()
   runtime = RouteRuntime(owner)
-  sm = messaging.SubMaster(['deviceState', *(service for service in GPS_SERVICES if service != 'starpilotNavigation')])
+  from openpilot.common.params import Params
+  from openpilot.starpilot.navigation.phone import RouteAgreement, boot_offset_ns, read_phone_navigation, select_navigation, write_verdict
+  from openpilot.starpilot.navigation.notification import LocalMapCorroborator
+  params = Params()
+  local_map = LocalMapCorroborator()
+  agreement = RouteAgreement()
+  last_reason = None
+  verdict_due = 0
+  last_phone_gps = None
+  sm = messaging.SubMaster(['deviceState', 'mapdOut', *(service for service in GPS_SERVICES if service != 'starpilotNavigation')])
   pm = messaging.PubMaster(['starpilotNavigation'])
   # Forward new phone measurements promptly; held fixes still need only a 1 Hz heartbeat.
   rate = Ratekeeper(5.)
@@ -317,7 +349,32 @@ def main():
         if now >= next_update_ns or phone_stamp != last_phone_stamp:
           next_update_ns = now + 1_000_000_000
           last_phone_stamp = phone_stamp
-          value = runtime.update(now, location(sm, now, phone_fix), drive_id)
+          gps_status = phone_gps_status(now)
+          gps_line = phone_gps_line(gps_status)
+          if gps_line != last_phone_gps:
+            last_phone_gps = gps_line
+            if gps_status is not None:
+              cloudlog.info('phone gps: %s usable=%s accepted=%s rejected=%s bounded=%s uncertaintyMs=%s', *gps_line,
+                            *(gps_status.get(key) for key in ('acceptedCount', 'rejectedCount', 'timingBounded', 'timingUncertaintyMs')))
+          fix = location(sm, now, phone_fix)
+          value = runtime.update(now, fix, drive_id)
+          official_active = params.get_bool('NavigationEnabled') and bool(params.get('NavDestination'))
+          phone_enabled = owner.read().get('phoneNavigation', False)
+          phone = read_phone_navigation(now) if phone_enabled else None
+          corroborate(local_map, sm, phone, drive_id, now, boot_offset_ns() if phone is not None else 0)
+          diagnostics = {}
+          value = select_navigation(value, phone, now_ns=now, drive_id=drive_id, official_active=official_active,
+                                    phone_enabled=phone_enabled, diagnostics=diagnostics, local_map=local_map,
+                                    speed=fix[2] if fix is not None and len(fix) > 2 else None, agreement=agreement)
+          reason = diagnostics['reason'], diagnostics.get('mapStatus', ''), diagnostics.get('mapReason', '')
+          if reason != last_reason:
+            last_reason = reason
+            # The published frame carries the junction's distance once confirmed, so keep the phone's own here.
+            cloudlog.info('notification navigation: %s %s detail=%s phone=%s', *reason, diagnostics.get('detail', ''))
+            verdict_due = 0
+          if phone is not None and now >= verdict_due:
+            verdict_due = now + 5_000_000_000
+            write_verdict(*reason, now)
           publish_status(pm, value, phone_fix)
       except (ValidationError, OSError, ValueError):
         cloudlog.warning('navigation settings or route unavailable')

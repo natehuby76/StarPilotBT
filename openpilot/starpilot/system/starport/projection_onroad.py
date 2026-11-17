@@ -10,6 +10,7 @@ from openpilot.starpilot.system.starport.identity import EXPIRY_WARNING_DAYS
 from openpilot.starpilot.system.starport.projection_exit import ProjectionExit
 from openpilot.starpilot.system.starport.projection_geometry import FALLBACK_VIEWPORT
 from openpilot.starpilot.system.starport.projection_map_lease import MapLeaseWriter
+from openpilot.starpilot.system.starport.projection_notifications import ProjectionNotificationFeed, ToastPainter, toast_visible
 
 CERTIFICATE_NOTICE_NS = 10_000_000_000  # how long the expiry heads-up stays at the start of a drive
 BOOKMARK_NOTICE_NS = 2_000_000_000  # how long "Bookmark Saved" stays after the drive is bookmarked
@@ -93,6 +94,7 @@ def native_dependencies():
   from openpilot.starpilot.system.starport.projection_now_playing import ProjectionNowPlayingFeed
   from openpilot.starpilot.system.starport.media_audio import music_control
   from openpilot.starpilot.models.jetlink_status import JetlinkStatusFeed
+  from openpilot.starpilot.ui.onroad_jetlink import gpu_inputs
 
   class ProjectionRoadCamera(AugmentedRoadView):
     """Current native calibrated camera/model without stock action widgets."""
@@ -151,7 +153,8 @@ def native_dependencies():
                          pip_rect=Rect, pip_widgets=CAMERA_WIDGETS, placement=placement, widget_size=widget_size,
                          alert=OnroadAlert, alert_size=AlertSize, map_overlay=live_overlay, map_feed=MapFeed,
                          favorites=ProjectionFavorites, standby_logo=standby_logo, now_playing_feed=ProjectionNowPlayingFeed,
-                         now_playing_control=music_control, jetlink_feed=JetlinkStatusFeed)
+                         now_playing_control=music_control, jetlink_feed=JetlinkStatusFeed, gpu_inputs=gpu_inputs,
+                         notification_feed=ProjectionNotificationFeed)
 
 
 class ProjectionOnroad:
@@ -196,6 +199,9 @@ class ProjectionOnroad:
       self._resources.callback(self._close_camera)
       self.onroad = self.create_view(native.onroad, self.fonts, camera_layer=self._camera_layer, viewport=viewport)
       self._resources.callback(self._close_onroad)
+      if getattr(self.onroad, 'uniden', None):
+        self.onroad.uniden.runtime_active = True
+        self._resources.callback(self.onroad.uniden.close)
       self.now_playing_feed = None
       if getattr(native, 'now_playing_feed', None) is not None:
         self.now_playing_feed = native.now_playing_feed()
@@ -208,6 +214,11 @@ class ProjectionOnroad:
       if getattr(native, 'jetlink_feed', None) is not None:
         self.jetlink_feed = native.jetlink_feed()
         self._resources.callback(self.jetlink_feed.close)
+      self.notification_feed = None
+      self._toast_painter = ToastPainter()
+      if getattr(native, 'notification_feed', None) is not None:
+        self.notification_feed = native.notification_feed()
+        self._resources.callback(self.notification_feed.close)
       self.exit = ProjectionExit(native.rl, lambda: self.native_focus())
       self.onroad.projection_exit_layer = self.exit.render
       self.monitor = native.monitor(native.profile.LARGE)
@@ -366,6 +377,8 @@ class ProjectionOnroad:
       placed = (self.customization or {}).get('widgets', {}).get('jetlink_status', {})
       self.jetlink_feed.set_enabled(bool(placed.get('enabled') and self.native.ui_state.started))
       self.onroad.jetlink_status.status = self.jetlink_feed.snapshot()
+      if (gpu_inputs := getattr(self.native, 'gpu_inputs', None)) is not None:
+        self.onroad.jetlink_status.gpu, self.onroad.jetlink_status.chestnut = gpu_inputs(self.native.ui_state)
     if self.favorites is not None:
       self.favorites.refresh()
       self.onroad.navigation_favorites.document = self.favorites.document
@@ -559,6 +572,7 @@ class ProjectionOnroad:
       # Touch hit-tests read viewport_width; the view draws at the car canvas width (1920 for a 1280x720 head unit).
       if state.viewport_width != self.width:
         state = replace(state, viewport_width=self.width)
+      real_alert = state.alert
       state = self._with_certificate_notice(self._with_reconnect_notice(state, now_ns), now_ns)
       state = self._with_bookmark_notice(state, now_ns)
       self._state = self._with_mode_notice(state, now_ns)
@@ -566,6 +580,7 @@ class ProjectionOnroad:
         self._state = self._slc_input.present(self._state)
       self.onroad.render(self._state)
       self.fonts.draw('StarPilot', self.native.font_role.BRAND, 30, self.width - 210, self.height - 90)
+      self._notification_toast(now_ns, alert=real_alert)
     else:
       self._state = None
       if self.favorites is not None:
@@ -577,14 +592,40 @@ class ProjectionOnroad:
       if self.pip is not None:
         self.pip.deactivate()
         self._set_pip_showing(False)
+      if getattr(self.onroad, "uniden", None):
+        self.onroad.uniden.feed.set_enabled(False)
       self._standby()
+      self._notification_toast(time.monotonic_ns())
       self.exit.draw(self.exit.document_placement(self.customization))
+
+  def _notification_toast(self, now_ns, *, alert=None):
+    """The latest phone notification for a few seconds; a real alert always wins."""
+    toast = self.notification_feed.snapshot() if self.notification_feed is not None else None
+    if toast is None:
+      return
+    native = self.native
+    ui = native.ui_state
+    started, speed = bool(ui.started), None
+    if started and alert is not None and alert.size != native.alert_size.NONE:
+      return
+    if started and toast.hide_while_moving:
+      car = native.display_message(ui.sm, 'carState', now_ns, after_frame=ui.started_frame)
+      speed = float(car.vEgo) if car is not None else None
+    if toast_visible(toast, now_ns, started=started, speed=speed):
+      self._draw_toast(toast)
+
+  def _draw_toast(self, toast):
+    self._toast_painter.draw(self.native.rl, self.fonts, self.native.font_role, toast, self.width, self.height)
 
   def handle_touches(self, events):
     placed = self.exit.document_placement(self.customization)
     for event in events:
       x, y = event.x * self.width, event.y * self.height
       if self.exit.touch(event.kind, x, y, placed):
+        if self.favorites is not None:
+          self.favorites.cancel()
+        continue
+      if getattr(self.onroad, 'uniden', None) and self.onroad.uniden.touch(event.kind, x, y, self._state):
         if self.favorites is not None:
           self.favorites.cancel()
         continue
@@ -639,6 +680,8 @@ class ProjectionOnroad:
     return gesture.claimed
 
   def cancel_touch(self):
+    if getattr(self.onroad, 'uniden', None):
+      self.onroad.uniden.touch('cancel', 0, 0, None)
     self.exit.cancel()
     if self.now_playing_touch is not None:
       self.now_playing_touch.cancel()

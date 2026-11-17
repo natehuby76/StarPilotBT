@@ -1,0 +1,356 @@
+import json
+
+import pytest
+
+from openpilot.cereal import custom
+from openpilot.starpilot.navigation.phone import LEASE_NS, OBSERVATION_NS, PhoneNavigationPublisher, read_phone_navigation, select_navigation
+from openpilot.starpilot.ui.navigation_state import navigation_display
+
+NOW = 100_000_000_000
+DRIVE = 1_000_000_000
+
+
+@pytest.fixture
+def stream(tmp_path):
+  clock = [NOW]
+  path = tmp_path / 'navigation.json'
+  return PhoneNavigationPublisher(path, lambda: clock[0]), path, clock
+
+
+def payload(**values):
+  return dict(session='test', sequence=1, active=True, ageMs=0, instruction='Take exit 12B onto Main St',
+              distanceMeters=120, maneuverType='off ramp', maneuverModifier='right', **values)
+
+
+def base(status='noDestination'):
+  return {'status': status, 'sessionId': 'mapbox', 'enabled': False, 'revision': '1', 'frameMonoTime': NOW,
+          'startedMonoTime': DRIVE, 'instruction': {}, 'nextManeuver': {}, 'route': [], 'locationMonoTime': 0, 'controlValid': False}
+
+
+def state(value):
+  return custom.StarPilotCarControl.new_message(navigation={**value, 'version': 2}).navigation
+
+
+def test_handoff_existing_schema_and_display(stream):
+  publisher, path, clock = stream
+  assert publisher.publish(payload()) == {'ok': True, 'accepted': True}
+  selected = select_navigation(base(), read_phone_navigation(NOW, path), now_ns=NOW, drive_id=DRIVE)
+  nav = state(selected)
+  assert nav.controlValid is False
+  assert len(nav.route) == 0
+  display = navigation_display(nav, now_ns=NOW, drive_id=DRIVE)
+  assert display.text == 'Take exit 12B onto Main St'
+  assert display.distance_m == 120
+  assert display.distance_known
+  assert not display.totals_known
+
+
+@pytest.mark.parametrize('status', ['routing', 'guiding', 'arrived', 'waitingForLocation', 'routeUnavailable'])
+def test_mapbox_owns_calculation_rerouting_and_guidance(stream, status):
+  publisher, path, _ = stream
+  publisher.publish(payload())
+  mapbox = base(status)
+  assert select_navigation(mapbox, read_phone_navigation(NOW, path), now_ns=NOW, drive_id=DRIVE) is mapbox
+
+
+def test_mapbox_start_end_and_official_priority(stream):
+  publisher, path, _ = stream
+  publisher.publish(payload())
+  phone = read_phone_navigation(NOW, path)
+  for status, source in [('noDestination', 'phone:googleMaps'), ('guiding', None), ('routing', None), ('noDestination', 'phone:googleMaps')]:
+    assert select_navigation(base(status), phone, now_ns=NOW, drive_id=DRIVE).get('source') == source
+  mapbox = base()
+  assert select_navigation(mapbox, phone, now_ns=NOW, drive_id=DRIVE, official_active=True) is mapbox
+
+
+def test_disconnect_and_observation_expiry_are_independent(stream):
+  publisher, path, clock = stream
+  publisher.publish(payload())
+  assert read_phone_navigation(NOW + LEASE_NS, path)
+  assert read_phone_navigation(NOW + LEASE_NS + 1, path) is None
+  for elapsed in range(10, 91, 10):
+    clock[0] = NOW + elapsed * 1_000_000_000
+    assert publisher.publish({**payload(), 'ageMs': elapsed * 1000})['accepted']
+  assert read_phone_navigation(NOW + OBSERVATION_NS, path)
+  assert read_phone_navigation(NOW + OBSERVATION_NS + 1, path) is None
+
+
+def test_duplicate_does_not_rejuvenate_old_distance(stream):
+  publisher, path, clock = stream
+  publisher.publish(payload())
+  clock[0] += 10_000_000_000
+  publisher.publish(payload())
+  assert json.loads(path.read_text())['observed'] == NOW
+
+
+@pytest.mark.parametrize('patch', [{'instruction': 'Turn left'}, {'distanceMeters': 1}, {'source': 'waze'},
+                                  {'maneuverModifier': 'left'}, {'roadName': 'Other road'}, {'remainingMeters': 10},
+                                  {'remainingSeconds': 10}])
+def test_duplicate_sequence_cannot_change_maneuver(stream, patch):
+  publisher, path, _ = stream
+  publisher.publish(payload())
+  assert not publisher.publish({**payload(), **patch})['accepted']
+  assert read_phone_navigation(NOW, path)['instruction'] == payload()['instruction']
+
+
+def test_stop_and_out_of_order_updates_do_not_resurrect(stream):
+  publisher, path, clock = stream
+  publisher.publish(payload())
+  publisher.publish({'session': 'test', 'sequence': 2, 'active': False, 'ageMs': 0})
+  assert read_phone_navigation(NOW, path) is None
+  assert not publisher.publish(payload())['accepted']
+  assert read_phone_navigation(NOW, path) is None
+  publisher.publish({**payload(), 'sequence': 3})
+  assert read_phone_navigation(NOW, path)
+
+
+@pytest.mark.parametrize('patch', [{'active': 1}, {'sequence': True}, {'ageMs': -1}, {'ageMs': 90001},
+                                  {'distanceMeters': float('nan')}, {'distanceMeters': -1}, {'ageMs': float('inf')},
+                                  {'instruction': ''}, {'maneuverType': []}, {'maneuverModifier': 'guess'},
+                                  {'exitNumber': 1}, {'unknown': True}, {'session': ''},
+                                  {'remainingMeters': -1}, {'remainingMeters': 20_000_001}, {'remainingMeters': float('inf')},
+                                  {'remainingSeconds': 604_801}, {'remainingSeconds': '60'}, {'remainingSeconds': True}])
+def test_rejects_malformed_updates_without_overwriting(stream, patch):
+  publisher, path, _ = stream
+  publisher.publish(payload())
+  with pytest.raises(ValueError):
+    publisher.publish({**payload(), **patch})
+  assert read_phone_navigation(NOW, path)['instruction'] == payload()['instruction']
+
+
+def test_text_only_guidance_is_selected_without_route_or_gps(stream):
+  publisher, path, _ = stream
+  publisher.publish({**payload(), 'distanceMeters': None, 'maneuverType': '', 'maneuverModifier': ''})
+  mapbox = base()
+  selected = select_navigation(mapbox, read_phone_navigation(NOW, path), now_ns=NOW, drive_id=DRIVE)
+  assert selected['source'] == 'phone:googleMaps'
+  display = navigation_display(state(selected), now_ns=NOW, drive_id=DRIVE)
+  assert display.text == payload()['instruction']
+  assert not display.distance_known and not display.totals_known
+  assert selected['locationMonoTime'] == 0 and not selected['controlValid']
+
+
+def test_corrupt_and_previous_boot_handoff(stream):
+  publisher, path, _ = stream
+  path.write_text('bad json')
+  assert read_phone_navigation(NOW, path) is None
+  publisher.publish(payload())
+  assert read_phone_navigation(NOW - 1, path) is None
+
+
+def test_suspend_invalidates_existing_lease(stream, monkeypatch):
+  from openpilot.starpilot.navigation import phone
+  publisher, path, _ = stream
+  monkeypatch.setattr(phone, 'boot_offset_ns', lambda: 100)
+  publisher.publish(payload())
+  assert read_phone_navigation(NOW, path)
+  monkeypatch.setattr(phone, 'boot_offset_ns', lambda: 2_000_000_100)
+  assert read_phone_navigation(NOW, path) is None
+
+
+def test_late_previous_session_cannot_replace_restart(stream):
+  publisher, path, _ = stream
+  publisher.publish(payload())
+  assert publisher.publish({**payload(), 'session': 'restarted', 'sequence': 0})['accepted']
+  assert not publisher.publish({**payload(), 'sequence': 2})['accepted']
+  assert read_phone_navigation(NOW, path)['session'] == 'restarted'
+
+
+def test_retired_sessions_remain_fenced_after_more_than_sixteen_restarts(stream):
+  from openpilot.starpilot.navigation.phone import MAX_RETIRED_SESSIONS
+  publisher, path, _ = stream
+  publisher.publish(payload())
+  for index in range(MAX_RETIRED_SESSIONS):
+    assert publisher.publish({**payload(), 'session': f'restart-{index}'})['accepted']
+  assert not publisher.publish({**payload(), 'sequence': 100})['accepted']
+  assert not publisher.publish({**payload(), 'session': 'beyond-limit'})['accepted']
+  assert publisher.publish({**payload(), 'session': f'restart-{MAX_RETIRED_SESSIONS - 1}', 'sequence': 2})['accepted']
+  stored = json.loads(path.read_text())
+  assert len(stored['retiredSessions']) == MAX_RETIRED_SESSIONS
+  restarted = PhoneNavigationPublisher(path, lambda: NOW)
+  assert not restarted.publish({**payload(), 'sequence': 101})['accepted']
+
+
+@pytest.mark.parametrize('corruption', [{'instruction': None}, {'retiredSessions': 1}, {'sequence': -1}])
+def test_corrupted_handoff_is_ignored_and_next_update_recovers(stream, corruption):
+  publisher, path, _ = stream
+  publisher.publish(payload())
+  value = json.loads(path.read_text())
+  path.write_text(json.dumps({**value, **corruption}))
+  assert read_phone_navigation(NOW, path) is None
+  assert publisher.publish({**payload(), 'sequence': 2})['accepted']
+  assert read_phone_navigation(NOW, path)
+
+
+@pytest.mark.parametrize('source', ['googleMaps', 'waze', 'futureApp'])
+def test_provider_agnostic_receiver_and_display(stream, source):
+  publisher, path, _ = stream
+  publisher.publish({**payload(), 'source': source})
+  selected = select_navigation(base(), read_phone_navigation(NOW, path), now_ns=NOW, drive_id=DRIVE)
+  assert selected['source'] == 'phone:' + source
+  assert not selected['controlValid']
+  assert navigation_display(state(selected), now_ns=NOW, drive_id=DRIVE).text == payload()['instruction']
+  assert select_navigation(base('guiding'), read_phone_navigation(NOW, path), now_ns=NOW, drive_id=DRIVE)['sessionId'] == 'mapbox'
+
+
+@pytest.mark.parametrize('source', ['', 'Mapbox', 'phone:waze', '../waze', None, 1])
+def test_source_identifier_validation(stream, source):
+  publisher, path, _ = stream
+  with pytest.raises(ValueError):
+    publisher.publish({**payload(), 'source': source})
+  assert read_phone_navigation(NOW, path) is None
+
+
+def test_comma_opt_in_required_before_selecting_phone(stream):
+  publisher, path, _ = stream
+  publisher.publish(payload())
+  mapbox = base()
+  assert select_navigation(mapbox, read_phone_navigation(NOW, path), now_ns=NOW, drive_id=DRIVE, phone_enabled=False) is mapbox
+  assert select_navigation(mapbox, read_phone_navigation(NOW, path), now_ns=NOW, drive_id=DRIVE, phone_enabled=True)['source'] == 'phone:googleMaps'
+
+
+def test_phone_status_explains_receipt_end_and_expiry(stream):
+  from openpilot.starpilot.navigation.phone import phone_navigation_status
+  publisher, path, _ = stream
+  assert phone_navigation_status(NOW, path) is None
+  publisher.publish(payload())
+  status = phone_navigation_status(NOW, path)
+  assert status['state'] == 'receiving' and status['instruction'] == payload()['instruction']
+  assert status['distanceMeters'] == 120
+  expired = phone_navigation_status(NOW + LEASE_NS + 1, path)
+  assert expired['state'] == 'expired' and expired['instruction'] == '' and expired['distanceMeters'] is None
+  assert status['remainingMeters'] is None and status['remainingSeconds'] is None
+  publisher.publish({**payload(), 'sequence': 2, 'remainingMeters': 8000, 'remainingSeconds': 600})
+  status = phone_navigation_status(NOW, path)
+  assert (status['remainingMeters'], status['remainingSeconds']) == (8000, 600)
+  assert phone_navigation_status(NOW + LEASE_NS + 1, path)['remainingMeters'] is None
+  publisher.publish({'session': 'test', 'sequence': 3, 'active': False, 'ageMs': 0})
+  assert phone_navigation_status(NOW, path)['state'] == 'ended'
+
+
+def test_trip_totals_reach_the_display_only_when_both_known(stream):
+  publisher, path, _ = stream
+  publisher.publish(payload(remainingMeters=8046.7, remainingSeconds=540))
+  selected = select_navigation(base(), read_phone_navigation(NOW, path), now_ns=NOW, drive_id=DRIVE)
+  display = navigation_display(state(selected), now_ns=NOW, drive_id=DRIVE)
+  assert display is not None and display.totals_known
+  assert display.remaining_distance_m == pytest.approx(8046.7, rel=1e-6) and display.remaining_seconds == 540
+  publisher.publish({**payload(), 'sequence': 2, 'remainingSeconds': 540})
+  selected = select_navigation(base(), read_phone_navigation(NOW, path), now_ns=NOW, drive_id=DRIVE)
+  display = navigation_display(state(selected), now_ns=NOW, drive_id=DRIVE)
+  assert display is not None and not display.totals_known
+
+
+def test_arrive_flows_to_the_card(stream):
+  from openpilot.starpilot.ui.navigation_icons import icon_name
+  publisher, path, _ = stream
+  publisher.publish({**payload(), 'maneuverType': 'arrive', 'maneuverModifier': '', 'instruction': 'Arrive at Library', 'distanceMeters': 40})
+  selected = select_navigation(base(), read_phone_navigation(NOW, path), now_ns=NOW, drive_id=DRIVE)
+  display = navigation_display(state(selected), now_ns=NOW, drive_id=DRIVE)
+  assert display is not None and display.maneuver_type == 'arrive' and display.text == 'Arrive at Library'
+  assert icon_name('arrive', '') == icon_name(display.maneuver_type, display.modifier)
+  assert 'arrive' in icon_name('arrive', '')
+
+
+class Aligned:
+  def __init__(self, status='mapAligned'):
+    self.value = status
+
+  def resolve(self, phone, *, speed=None, now_ns=None):
+    from openpilot.starpilot.navigation.notification import Resolution
+    if phone.get('distanceMeters') is None:
+      return Resolution('mapUnverifiable')
+    return Resolution(self.value, phone.get('maneuverType', ''), phone.get('maneuverModifier', ''), 80., NOW - 100)
+
+
+def selected_for_control(stream, local_map, **values):
+  publisher, path, clock = stream
+  publisher.publish({**payload(), 'session': f'control{len(values)}{id(local_map)}{values.get("distanceMeters", "")}',
+                     'maneuverType': 'turn', 'maneuverModifier': 'right', **values})
+  return select_navigation(base(), read_phone_navigation(NOW, path), now_ns=NOW, drive_id=DRIVE, local_map=local_map)
+
+
+def test_control_needs_map_agreement_known_distance_and_fresh_observation(stream):
+  granted = selected_for_control(stream, Aligned())
+  assert granted['controlValid'] and granted['locationMonoTime'] == NOW - 100
+  assert granted['instruction']['distanceMeters'] == 80.
+  for status in ('mapUnavailable', 'mapAmbiguous', 'mapDifferentDirection', 'mapNoNearbyJunction', 'mapUnverifiable'):
+    assert not selected_for_control(stream, Aligned(status))['controlValid']
+  assert not selected_for_control(stream, None)['controlValid']
+  assert not selected_for_control(stream, Aligned(), distanceMeters=None)['controlValid']
+
+
+class Odometer:
+  def __init__(self, driven=0.):
+    self.driven = driven
+
+  def driven_since(self, stamp_ns, *, speed, now_ns):
+    return self.driven
+
+
+def route(distance=200., modifier='left', **values):
+  return {**base('guiding'), 'enabled': True, 'controlValid': True, **values,
+          'instruction': {'text': 'Turn left onto Main Street', 'maneuverType': 'turn', 'maneuverModifier': modifier,
+                          'distanceMeters': distance}}
+
+
+def judged(stream, agreement, value, *, now=None, driven=0., **phone):
+  publisher, path, clock = stream
+  clock[0] = now or clock[0]
+  if phone:
+    assert publisher.publish({**payload(), 'instruction': 'Main St', 'maneuverType': '', 'maneuverModifier': '', **phone})['accepted']
+  diagnostics = {}
+  selected = select_navigation(value, read_phone_navigation(clock[0], path), now_ns=clock[0], drive_id=DRIVE,
+                               diagnostics=diagnostics, local_map=Odometer(driven), speed=10., agreement=agreement)
+  return selected, diagnostics['reason']
+
+
+def test_phone_that_no_longer_announces_the_route_turn_is_reported_without_touching_control(stream):
+  from openpilot.starpilot.navigation.phone import ROUTE_CONFLICT_NS, RouteAgreement
+  agreement, value = RouteAgreement(), route()
+  selected, reason = judged(stream, agreement, value, sequence=1, distanceMeters=190)
+  assert selected is value and reason == 'routeAgreed'
+  # The phone's next step is now far beyond the route's turn: a short disagreement changes nothing.
+  selected, reason = judged(stream, agreement, value, sequence=2, distanceMeters=1900)
+  assert selected is value and reason == 'mapboxPriority'
+  selected, reason = judged(stream, agreement, value, now=NOW + ROUTE_CONFLICT_NS)
+  assert reason == 'routeConflict' and selected is value and value['controlValid']
+  # Close to the turn the verdict stands rather than being judged again.
+  near = route(distance=30.)
+  near['instruction']['text'] = value['instruction']['text']
+  assert judged(stream, agreement, near)[1] == 'routeConflict'
+  # Agreement, a new route step, or the phone going quiet each restore the route's own authority.
+  assert judged(stream, agreement, value, sequence=3, distanceMeters=210)[1] == 'routeAgreed'
+  assert judged(stream, agreement, value, sequence=4, active=False)[1] == 'mapboxPriority'
+
+
+def test_route_agreement_reads_distance_driven_side_and_freshness(stream):
+  from openpilot.starpilot.navigation.phone import ROUTE_CONFLICT_NS, RouteAgreement
+  from openpilot.starpilot.navigation.wire import PHONE_CONTROL_AGE_NS
+  agreement = RouteAgreement()
+  # 500 m reported, 300 m driven since: the same junction as the route's 200 m.
+  assert judged(stream, agreement, route(), driven=300., sequence=1, distanceMeters=500)[1] == 'routeAgreed'
+  # An earlier phone step, an unknown distance and a non-turn are no evidence either way.
+  for value, phone in ((route(), {'distanceMeters': 40}), (route(), {'distanceMeters': None}),
+                       (route(modifier='slightLeft'), {'distanceMeters': 1900}), (route(status='routing'), {'distanceMeters': 1900})):
+    agreement = RouteAgreement()
+    judged(stream, agreement, value, sequence=stream[2][0], **phone)
+    assert judged(stream, agreement, value, now=stream[2][0] + ROUTE_CONFLICT_NS)[1] == 'mapboxPriority'
+  # The opposite side at the same junction is a different turn.
+  agreement, start = RouteAgreement(), stream[2][0]
+  judged(stream, agreement, route(), sequence=start, distanceMeters=200, maneuverType='turn', maneuverModifier='right',
+         instruction='Turn right onto Main St')
+  assert judged(stream, agreement, route(), now=start + ROUTE_CONFLICT_NS)[1] == 'routeConflict'
+  # A phone reading too old for control cannot hold the conflict.
+  assert judged(stream, agreement, route(), now=start + PHONE_CONTROL_AGE_NS + 1)[1] == 'mapboxPriority'
+
+
+def test_verdict_reaches_the_phone_reply_and_expires(tmp_path):
+  from openpilot.starpilot.navigation.phone import VERDICT_NS, read_verdict, write_verdict
+  path = tmp_path / 'verdict.json'
+  assert read_verdict(NOW, path) is None
+  write_verdict('notificationGuidance', 'mapInferred', '', NOW, path)
+  assert read_verdict(NOW + VERDICT_NS, path) == {'reason': 'notificationGuidance', 'mapStatus': 'mapInferred', 'mapReason': ''}
+  assert read_verdict(NOW + VERDICT_NS + 1, path) is None
+  path.write_text('{"reason": 1}')
+  assert read_verdict(NOW, path) is None

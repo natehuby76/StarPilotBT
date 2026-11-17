@@ -63,6 +63,7 @@ def tick(stream, now, seconds=1.0):
   ('exit roundabout', 'left', (ns.EVENT_ROUNDABOUT_EXIT, ns.SIDE_LEFT)),
   ('depart', 'none', (ns.EVENT_DEPART, ns.SIDE_UNSPECIFIED)),
   ('arrive', 'right', (ns.EVENT_DESTINATION, ns.SIDE_RIGHT)),
+  ('', '', (ns.EVENT_UNKNOWN, ns.SIDE_UNSPECIFIED)),
 ])
 def test_mapbox_maneuvers_map_to_the_cars_events(kind, modifier, expected):
   assert ns.maneuver_event(kind, modifier) == expected
@@ -279,7 +280,7 @@ def test_projection_session_dispatches_navigation_focus(nav):
   ('turn', 'sharpLeft', 9), ('arrive', 'right', 42), ('arrive', '', 39),
   ('merge', '', 29), ('fork', 'left', 25), ('continue', 'straight', 36),
   ('on ramp', 'slight right', 14), ('off ramp', 'left', 23),
-  ('roundabout', 'right', 0), ('turn', 'uturn', 0),
+  ('roundabout', 'right', 0), ('turn', 'uturn', 0), ('', '', 0),
 ])
 def test_modern_maneuver_wire_values(kind, modifier, wire_value):
   assert ns.modern_maneuver(kind, modifier) == wire_value
@@ -315,3 +316,55 @@ def test_honda_descriptor_uses_next_turn_image_without_dimensions():
   session = Session(navigation=options)
   stream = ns.NavStatus.create(session, lambda *a, **k: None, feed=Feed())
   assert stream.image_size is None  # no invented size; semantic guidance is still sent
+
+
+def phone_feed(monkeypatch, *, observed_age_s, speed, distance=200., known=True, totals=None):
+  import time
+  from types import SimpleNamespace as NS
+  now = time.monotonic_ns()
+  instruction = NS(text='Turn right onto Main St', maneuverType='turn', maneuverModifier='right', distanceMeters=distance,
+                   remainingDistanceMeters=totals[0] if totals else 0., remainingDurationSeconds=totals[1] if totals else 0.)
+  nav = NS(version=2, status='guiding', source='phone:googleMaps', distanceKnown=known, totalsKnown=totals is not None,
+           instruction=instruction,
+           observationMonoTime=now - int(observed_age_s * 1e9))
+
+  class SM(dict):
+    valid = {'starpilotNavigation': True, 'carState': True}
+    alive = {'starpilotNavigation': True, 'carState': True}
+    logMonoTime = {'starpilotNavigation': now}
+
+    def update(self, _):
+      pass
+
+  feed = ns.NavFeed.__new__(ns.NavFeed)
+  feed._sm = SM(starpilotNavigation=NS(navigation=nav), carState=NS(vEgo=speed))
+  monkeypatch.setattr('openpilot.common.params.Params', lambda: NS(get_bool=lambda key: False))
+  return feed
+
+
+def test_phone_guidance_reaches_the_car_display_and_counts_down(monkeypatch):
+  snapshot = phone_feed(monkeypatch, observed_age_s=4., speed=10.)._read_cereal()
+  assert snapshot['road'] == 'Turn right onto Main St' and snapshot['type'] == 'turn'
+  assert 155 < snapshot['distance'] < 165
+
+
+def test_phone_guidance_without_distance_or_past_the_turn_is_not_shown(monkeypatch):
+  assert phone_feed(monkeypatch, observed_age_s=1., speed=10., known=False)._read_cereal() is None
+  assert phone_feed(monkeypatch, observed_age_s=20., speed=15., distance=30.)._read_cereal() is None
+
+
+def test_phone_trip_totals_pace_the_car_display_only_when_known(monkeypatch):
+  snapshot = phone_feed(monkeypatch, observed_age_s=0., speed=0., totals=(9000., 600.))._read_cereal()
+  assert (snapshot['remaining'], snapshot['duration']) == (9000., 600.)
+  unknown = phone_feed(monkeypatch, observed_age_s=0., speed=0.)._read_cereal()
+  assert (unknown['remaining'], unknown['duration']) == (0., 0.)
+  sent = []
+  from types import SimpleNamespace as NS
+  stream = ns.NavStatus(NS(send=lambda _channel, kind, body: sent.append((kind, body))), {'id': 3}, None, lambda *a, **k: None)
+  stream._update(snapshot, 0.)
+  paced = dict(sent)[ns.NAV_DISTANCE]
+  assert paced == ns.distance_message(200., 200. / 15., False)
+  sent.clear()
+  stream = ns.NavStatus(NS(send=lambda _channel, kind, body: sent.append((kind, body))), {'id': 3}, None, lambda *a, **k: None)
+  stream._update(unknown, 0.)
+  assert dict(sent)[ns.NAV_DISTANCE] == ns.distance_message(200., 200. / ns.FALLBACK_SPEED, False)

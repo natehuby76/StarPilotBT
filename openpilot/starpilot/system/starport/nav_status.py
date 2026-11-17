@@ -1,4 +1,4 @@
-"""Mapbox turn-by-turn for the car's own displays (instrument cluster, HUD), as a phone sends it.
+"""Turn-by-turn (Mapbox route or forwarded phone guidance) for the car's own displays (instrument cluster, HUD), as a phone sends it.
 
 Only head units that advertise the navigation status service receive it, and only while a route is
 guiding. The route is polled on its own thread; the session loop just compares and sends.
@@ -34,7 +34,7 @@ SIDE_LEFT, SIDE_RIGHT, SIDE_UNSPECIFIED = 1, 2, 0
 (EVENT_DEPART, EVENT_NAME_CHANGE, EVENT_SLIGHT_TURN, EVENT_TURN, EVENT_SHARP_TURN, EVENT_U_TURN, EVENT_ON_RAMP,
  EVENT_OFF_RAMP, EVENT_FORK, EVENT_MERGE, EVENT_ROUNDABOUT_ENTER, EVENT_ROUNDABOUT_EXIT,
  EVENT_ROUNDABOUT_ENTER_AND_EXIT, EVENT_STRAIGHT) = range(1, 15)
-EVENT_DESTINATION = 19
+EVENT_UNKNOWN, EVENT_DESTINATION = 0, 19
 UNIT_METERS, UNIT_KILOMETERS, UNIT_KILOMETERS_P1, UNIT_MILES, UNIT_MILES_P1, UNIT_FEET = 1, 2, 3, 4, 5, 6
 
 STEP_TIMEOUT = 3.0
@@ -64,6 +64,8 @@ def _normal(value: str) -> str:
 def maneuver_event(maneuver_type: str, modifier: str) -> tuple[int, int]:
   """Mapbox maneuver -> (event, turn side)."""
   kind, mod = _normal(maneuver_type), _normal(modifier)
+  if not kind:
+    return EVENT_UNKNOWN, SIDE_UNSPECIFIED
   side = SIDE_LEFT if 'left' in mod else SIDE_RIGHT if 'right' in mod else SIDE_UNSPECIFIED
   if kind in ('roundabout', 'rotary', 'roundaboutturn'):
     return EVENT_ROUNDABOUT_ENTER_AND_EXIT, side
@@ -107,7 +109,10 @@ def turn_image(maneuver_type: str, modifier: str, width: int, height: int) -> by
     import io
     from PIL import Image
     from openpilot.starpilot.ui.navigation_icons import ASSETS, icon_name
-    with Image.open(ASSETS / icon_name(maneuver_type, modifier)) as icon:
+    name = icon_name(maneuver_type, modifier)
+    if not name:
+      return None
+    with Image.open(ASSETS / name) as icon:
       icon = icon.convert('RGBA')
       icon.thumbnail((width, height))
       canvas = Image.new('RGBA', (width, height), (0, 0, 0, 0))
@@ -137,6 +142,8 @@ def modern_maneuver(maneuver_type: str, modifier: str) -> int:
   kind, mod = _normal(maneuver_type), _normal(modifier)
   right = 'right' in mod
   directional = right or 'left' in mod
+  if not kind or (kind == 'turn' and not mod):
+    return 0  # Phone guidance without a parsed maneuver or side: no arrow rather than straight.
   if kind == 'depart':
     return 1
   if kind == 'arrive':
@@ -185,16 +192,19 @@ class NavFeed:
     self._thread.start()
 
   def _read_cereal(self) -> dict | None:
-    from openpilot.starpilot.navigation.wire import navigation_state
+    from openpilot.starpilot.navigation.wire import is_phone_navigation, navigation_state
     if self._sm is None:
       from openpilot.cereal import messaging
-      self._sm = messaging.SubMaster(['starpilotNavigation'])
+      self._sm = messaging.SubMaster(['starpilotNavigation', 'carState'])
     self._sm.update(0)
     stamp = self._sm.logMonoTime['starpilotNavigation']
     if not self._sm.valid['starpilotNavigation'] or not 0 < stamp <= time.monotonic_ns() <= stamp + int(STALE_AFTER * 1e9):
       return None
     state = navigation_state(self._sm['starpilotNavigation'])
     if state is None or state.status not in ('guiding', 'routing'):
+      return None
+    phone = is_phone_navigation(state)
+    if phone and (state.status != 'guiding' or not state.distanceKnown):
       return None
     from openpilot.common.params import Params
     snapshot = {'state': state.status, 'metric': Params().get_bool('IsMetric')}
@@ -203,6 +213,16 @@ class NavFeed:
       snapshot.update(road=instruction.text, type=instruction.maneuverType, modifier=instruction.maneuverModifier,
                       distance=float(instruction.distanceMeters), remaining=float(instruction.remainingDistanceMeters),
                       duration=float(instruction.remainingDurationSeconds))
+      if phone and not state.totalsKnown:
+        snapshot.update(remaining=0., duration=0.)
+      if phone:
+        # Phone distances only change when the notification does, so count down between updates.
+        speed = float(self._sm['carState'].vEgo) if self._sm.alive['carState'] else 0.
+        age = max(0., (time.monotonic_ns() - state.observationMonoTime) * 1e-9)
+        driven = max(0., speed) * age
+        if driven > snapshot['distance'] + 50.:
+          return None
+        snapshot['distance'] = max(0., snapshot['distance'] - driven)
     return snapshot
 
   def _run(self) -> None:

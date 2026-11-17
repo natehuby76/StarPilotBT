@@ -4,6 +4,7 @@ import hashlib
 
 from openpilot.starpilot.ui.raylib import rl
 
+from openpilot.starpilot.navigation.wire import PHONE_SOURCE_PREFIX
 from openpilot.starpilot.ui.appearance_preferences import CameraViewChoice
 from openpilot.starpilot.ui.navigation_icons import ASSETS, MANIFEST, icon_name
 from openpilot.starpilot.ui.navigation_state import distance_text
@@ -14,6 +15,9 @@ from openpilot.starpilot.ui.presentation import FontRole, Profile
 FAR_TURN_M = 1500.
 THEN_MAX_GAP_M = 400.
 LANES_SHOW_M = 800.
+CUES = {'assist': ('Turn assist', (96, 214, 146)), 'ready': ('Turn ready', (178, 150, 255)), 'blindspot': ('Blind spot', (255, 112, 112)),
+        'signalLeft': ('Signal left', (255, 194, 84)), 'signalRight': ('Signal right', (255, 194, 84)),
+        'signal': ('Signal to turn', (255, 194, 84)), 'slowing': ('Slowing for turn', (178, 150, 255))}
 
 
 def _overlaps_slc_actions(rect, profile, state) -> bool:
@@ -24,6 +28,28 @@ def _overlaps_slc_actions(rect, profile, state) -> bool:
 def arrival_time(remaining_seconds: float, now: datetime) -> str:
   arrival = now + timedelta(seconds=max(0, remaining_seconds))
   return arrival.strftime('%I:%M %p').lstrip('0')
+
+
+SOURCE_MARK = rl.Color(160, 126, 220, 230)
+
+
+def _source_mark(phone, x, y, size):
+  """A quiet glyph for where guidance comes from: a phone for phone navigation, a folded map otherwise."""
+  thick = max(1.5, size * .09)
+  if phone:
+    width = size * .58
+    left = x + (size - width) / 2
+    rl.draw_rectangle_rounded_lines_ex(rl.Rectangle(left, y, width, size), .35, 8, thick, SOURCE_MARK)
+    rl.draw_line_ex(rl.Vector2(x + size * .42, y + size * .82), rl.Vector2(x + size * .58, y + size * .82), thick, SOURCE_MARK)
+    return
+  outline = ((0, .14), (.33, 0), (.67, .14), (1, 0), (1, .86), (.67, 1), (.33, .86), (0, 1))
+  points = [(x + px * size, y + py * size) for px, py in outline]
+  segments = list(zip(points, points[1:] + points[:1], strict=True)) + [(points[1], points[6]), (points[2], points[5])]
+  for (ax, ay), (bx, by) in segments:
+    # Overlap each stroke slightly so the corners close.
+    length = max(1e-6, ((bx - ax) ** 2 + (by - ay) ** 2) ** .5)
+    dx, dy = (bx - ax) / length * thick / 2, (by - ay) / length * thick / 2
+    rl.draw_line_ex(rl.Vector2(ax - dx, ay - dy), rl.Vector2(bx + dx, by + dy), thick, SOURCE_MARK)
 
 
 class NavigationCard:
@@ -131,9 +157,16 @@ class NavigationCard:
     nav = state.navigation
     compact = self.fonts.profile == Profile.COMPACT
     rl.draw_rectangle_rounded(rect, .2, 8, rl.Color(15, 13, 23, 255 if compact else 245))
-    rl.draw_rectangle_rounded_lines_ex(rect, .2, 8, 2, rl.Color(160, 126, 220, 190))
-    icon = self._icon(icon_name('arrive' if nav.arrived else nav.maneuver_type, nav.modifier))
+    cue = CUES.get(nav.cue)
+    rl.draw_rectangle_rounded_lines_ex(rect, .2, 8, 4 if cue else 2, rl.Color(*cue[1], 255) if cue else rl.Color(160, 126, 220, 190))
+    kind = 'arrive' if nav.arrived else nav.maneuver_type
+    if nav.key[0].startswith(PHONE_SOURCE_PREFIX) and (not kind or not nav.modifier and kind in ('turn', 'fork', 'off ramp')):
+      kind = 'invalid'
+    name = icon_name(kind, nav.modifier)
+    icon = self._icon(name) if name else None
     if self.collapsed:
+      if icon is None:
+        return
       size = 64 if compact else 100
       rl.draw_texture_pro(icon, rl.Rectangle(0, 0, icon.width, icon.height),
                           rl.Rectangle(rect.x + (rect.width - size) / 2, rect.y + (rect.height - size) / 2, size, size),
@@ -144,16 +177,21 @@ class NavigationCard:
     lanes = () if nav.arrived or nav.distance_m > LANES_SHOW_M else nav.lanes
     header = rect.height * ((.52 if lanes else .64) if compact else (.55 if lanes else .66))
     size = min(84 if compact else 122, header - 6)
-    if not lanes:
+    if not lanes and icon is not None:
       rl.draw_texture_pro(icon, rl.Rectangle(0, 0, icon.width, icon.height),
                           rl.Rectangle(rect.x + padding, rect.y + (header - size) / 2, size, size), rl.Vector2(0, 0), 0, rl.WHITE)
-    x = rect.x + padding * (1 if lanes else 2) + (0 if lanes else size)
+    beside = not lanes and icon is not None
+    x = rect.x + padding * (2 if beside else 1) + (size if beside else 0)
     width = rect.x + rect.width - padding - x
     distance_size, text_size = (32, 20) if compact else (66, 38)
-    distance = 'Arrived' if nav.arrived else distance_text(nav.distance_m, state.metric)
+    distance = 'Arrived' if nav.arrived else distance_text(nav.distance_m, state.metric) if nav.distance_known else 'Phone navigation'
     far = not nav.arrived and nav.distance_m > FAR_TURN_M
     y = rect.y + (8 if compact else 12)
     self.fonts.draw(distance, FontRole.BOLD, distance_size, x, y, rl.WHITE)
+    mark = 18 if compact else 30
+    mark_x, mark_y = rect.x + rect.width - padding - mark, y + (distance_size - mark) / 2
+    if x + self.fonts.measure(distance, FontRole.BOLD, distance_size).width + mark / 2 < mark_x:
+      _source_mark(nav.key[0].startswith(PHONE_SOURCE_PREFIX), mark_x, mark_y, mark)
     y += distance_size + (2 if compact else 4)
     lines = self._lines(nav.text, width, text_size, max_lines=1 if far or lanes else 2)
     for i, text in enumerate(lines):
@@ -161,7 +199,7 @@ class NavigationCard:
     if nav.arrived:
       return
     top = rect.y + header
-    now = self.clock()
+    now = self.clock() if nav.totals_known else None
     eta = f'ETA {arrival_time(nav.remaining_seconds, now)}' if now is not None else ''
     right = rect.x + rect.width - padding
     bar_center = rect.y + rect.height - (11 if compact else 21)
@@ -176,13 +214,16 @@ class NavigationCard:
       self._lane_strip(lanes, rect.x + padding, lane_top, right, bar_center - (8 if compact else 12) - 6 - lane_top)
     else:
       chip = 20 if compact else 28
-      self._then(nav, rect.x + padding, top + 7, chip)
-      if not compact:
+      if cue:
+        self._cue(cue, rect.x + padding, top + 7, chip)
+      else:
+        self._then(nav, rect.x + padding, top + 7, chip)
+      if not compact and nav.totals_known:
         trip = f'{distance_text(nav.remaining_distance_m, state.metric)} | {max(1, round(nav.remaining_seconds / 60))} min'
         trip_size = 32
         trip_width = self.fonts.measure(trip, FontRole.MEDIUM, trip_size).width
         self.fonts.draw(trip, FontRole.MEDIUM, trip_size, right - trip_width, top, rl.Color(214, 210, 226, 255))
-    if self._total > 0:
+    if nav.totals_known and self._total > 0:
       thick = 5 if compact else 6
       bar = rl.Rectangle(rect.x + padding, bar_center - thick / 2, bar_right - (rect.x + padding), thick)
       rl.draw_rectangle_rounded(bar, 1., 4, rl.Color(160, 126, 220, 60))
@@ -205,6 +246,12 @@ class NavigationCard:
                           rl.Rectangle(box.x + (box.width - size) / 2, box.y + (box.height - size) / 2, size, size),
                           rl.Vector2(0, 0), 0, rl.WHITE if active else rl.Color(112, 104, 134, 255))
 
+  def _cue(self, cue, x, y, size):
+    label, color = cue
+    width = self.fonts.measure(label, FontRole.SEMI_BOLD, size - 4).width
+    rl.draw_rectangle_rounded(rl.Rectangle(x, y - 4, width + 24, size + 8), .5, 8, rl.Color(*color, 48))
+    self.fonts.draw(label, FontRole.SEMI_BOLD, size - 4, x + 12, y + 1, rl.Color(*color, 255))
+
   def _then(self, nav, x, y, size):
     """A "Then <arrow>" chip when the turn after this one comes soon after it."""
     if not nav.then_type or nav.then_distance_m is None:
@@ -217,7 +264,10 @@ class NavigationCard:
     chip = rl.Rectangle(x, y - 4, label_width + size + 28, size + 8)
     rl.draw_rectangle_rounded(chip, .5, 8, rl.Color(44, 37, 70, 255))
     self.fonts.draw(label, FontRole.SEMI_BOLD, size - 4, x + 12, y + 1, rl.Color(199, 174, 247, 255))
-    icon = self._icon(icon_name(nav.then_type, nav.then_modifier))
+    name = icon_name(nav.then_type, nav.then_modifier)
+    if not name:
+      return
+    icon = self._icon(name)
     rl.draw_texture_pro(icon, rl.Rectangle(0, 0, icon.width, icon.height),
                         rl.Rectangle(x + label_width + 18, y - 1, size, size), rl.Vector2(0, 0), 0, rl.WHITE)
 

@@ -1,0 +1,269 @@
+"""Short-lived notification guidance. Only navigationd publishes the selected source."""
+import json
+import math
+import re
+from pathlib import Path
+import tempfile
+import threading
+import time
+
+OBSERVATION_NS = 90_000_000_000
+LEASE_NS = 15_000_000_000
+MAX_RETIRED_SESSIONS = 256
+PATH = '/api/companion/navigation'
+FIELDS = {'session', 'sequence', 'active', 'ageMs', 'instruction', 'maneuverType', 'maneuverModifier', 'distanceMeters',
+          'roadName', 'exitNumber', 'destination', 'source', 'remainingMeters', 'remainingSeconds'}
+TOTAL_LIMITS = {'remainingMeters': 20_000_000, 'remainingSeconds': 604_800}
+TYPES = {'', 'turn', 'continue', 'on ramp', 'off ramp', 'fork', 'merge', 'roundabout', 'arrive'}
+MODIFIERS = {'', 'left', 'right', 'straight', 'slightLeft', 'slightRight', 'sharpLeft', 'sharpRight', 'uturn'}
+
+
+def boot_offset_ns():
+  # monotonic excludes suspend, while the phone's elapsedRealtime includes it.
+  # Invalidate a pre-suspend lease instead of replaying it on comma's wakeup.
+  return time.clock_gettime_ns(getattr(time, 'CLOCK_BOOTTIME', time.CLOCK_MONOTONIC)) - time.monotonic_ns()
+
+
+def handoff_path():
+  shm = Path('/dev/shm')
+  return (shm if shm.is_dir() else Path(tempfile.gettempdir())) / 'starpilot_phone_navigation.json'
+
+
+VERDICT_NS = 15_000_000_000
+
+
+def verdict_path():
+  return handoff_path().with_name('starpilot_phone_navigation_verdict.json')
+
+
+def write_verdict(reason, map_status, map_reason, now_ns, path=None):
+  # What navigationd made of the phone's guidance, for the phone's own status screen.
+  path = path or verdict_path()
+  try:
+    temporary = path.with_name(path.name + '.tmp')
+    temporary.write_text(json.dumps({'reason': reason, 'mapStatus': map_status, 'mapReason': map_reason,
+                                     'at': now_ns, 'bootOffset': boot_offset_ns()}))
+    temporary.replace(path)
+  except OSError:
+    pass
+
+
+def read_verdict(now_ns, path=None):
+  try:
+    value = json.loads((path or verdict_path()).read_text())
+    if (abs(value['bootOffset'] - boot_offset_ns()) <= 1_000_000_000 and 0 < value['at'] <= now_ns <= value['at'] + VERDICT_NS and
+        all(isinstance(value[key], str) and len(value[key]) <= 64 for key in ('reason', 'mapStatus', 'mapReason'))):
+      return {key: value[key] for key in ('reason', 'mapStatus', 'mapReason')}
+  except (OSError, ValueError, KeyError, TypeError):
+    pass
+  return None
+
+
+def _read(path):
+  try:
+    value = json.loads(path.read_text())
+    if (isinstance(value, dict) and isinstance(value.get('session'), str) and type(value.get('sequence')) is int and
+        type(value.get('active')) is bool and all(type(value.get(key)) is int for key in ('observed', 'received', 'bootOffset'))):
+      retired = value.get('retiredSessions', [])
+      if (not isinstance(retired, list) or len(retired) > MAX_RETIRED_SESSIONS or
+          any(not isinstance(item, str) or not 1 <= len(item) <= 64 for item in retired)):
+        return None
+      validate_payload({key: value[key] for key in FIELDS if key in value})
+      return value
+    return None
+  except (OSError, ValueError):
+    return None
+
+
+def validate_payload(payload):
+  if not isinstance(payload, dict) or set(payload) - FIELDS:
+    raise ValueError('Unexpected navigation fields')
+  source = payload.get('source', 'googleMaps')
+  if not isinstance(source, str) or re.fullmatch(r'[a-z][a-zA-Z0-9]{0,31}', source) is None:
+    raise ValueError('Invalid navigation source')
+  session, sequence, active = (payload.get(key) for key in ('session', 'sequence', 'active'))
+  if (not isinstance(session, str) or not 1 <= len(session) <= 64 or
+      type(sequence) is not int or not 0 <= sequence < 2 ** 53 or type(active) is not bool):
+    raise ValueError('Invalid navigation session')
+  if any(key in payload and (not isinstance(payload[key], str) or len(payload[key]) > 500) for key in ('roadName', 'exitNumber', 'destination')):
+    raise ValueError('Invalid road or exit')
+  age = payload.get('ageMs')
+  if type(age) not in (int, float) or not math.isfinite(age) or not 0 <= age <= OBSERVATION_NS / 1e6:
+    raise ValueError('Navigation observation expired')
+  text = payload.get('instruction', '')
+  kind, modifier = payload.get('maneuverType', ''), payload.get('maneuverModifier', '')
+  distance = payload.get('distanceMeters')
+  if (not isinstance(text, str) or len(text) > 500 or (active and not text.strip()) or
+      not isinstance(kind, str) or kind not in TYPES or not isinstance(modifier, str) or modifier not in MODIFIERS or
+      (distance is not None and (type(distance) not in (int, float) or not math.isfinite(distance) or not 0 <= distance <= 1_000_000))):
+    raise ValueError('Invalid navigation instruction')
+  for key, limit in TOTAL_LIMITS.items():
+    value = payload.get(key)
+    if value is not None and (type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= limit):
+      raise ValueError('Invalid navigation totals')
+  return session, sequence, age
+
+
+class PhoneNavigationPublisher:
+  def __init__(self, path=None, mono_clock=time.monotonic_ns):
+    self.path = path or handoff_path()
+    self.clock = mono_clock
+    self.lock = threading.Lock()
+
+  def publish(self, payload):
+    session, sequence, age = validate_payload(payload)
+    with self.lock:
+      now = self.clock()
+      observed = now - int(age * 1e6)
+      old = _read(self.path)
+      retired = old.get('retiredSessions', []) if old else []
+      if session in retired:
+        return {'ok': True, 'accepted': False}
+      if old and old.get('session') != session:
+        # Never forget a retired producer; at the boot-scoped limit, keep the current session only.
+        if len(retired) >= MAX_RETIRED_SESSIONS:
+          return {'ok': True, 'accepted': False}
+        retired = [*retired, old['session']]
+      if old and old.get('session') == session:
+        if sequence < old['sequence'] or (sequence == old['sequence'] and payload.get('active') != old['active']):
+          return {'ok': True, 'accepted': False}
+        if sequence == old['sequence']:
+          # A heartbeat may update age/transport receipt, never the maneuver.
+          if any(payload.get(key) != old.get(key) for key in FIELDS - {'ageMs'}):
+            return {'ok': True, 'accepted': False}
+          # A retry/heartbeat cannot make the original observation younger.
+          observed = min(observed, old['observed'])
+      value = {**payload, 'observed': observed, 'received': now, 'bootOffset': boot_offset_ns(), 'retiredSessions': retired}
+      temporary = self.path.with_name(self.path.name + '.tmp')
+      temporary.write_text(json.dumps(value, allow_nan=False))
+      temporary.replace(self.path)
+    return {'ok': True, 'accepted': True}
+
+
+def read_phone_navigation(now_ns, path=None):
+  value = _read(path or handoff_path())
+  try:
+    if (abs(value['bootOffset'] - boot_offset_ns()) <= 1_000_000_000 and value['active'] and
+        0 < value['observed'] <= now_ns <= value['observed'] + OBSERVATION_NS and
+        0 < value['received'] <= now_ns <= value['received'] + LEASE_NS):
+      return value
+  except (TypeError, KeyError):
+    pass
+  return None
+
+
+def phone_navigation_status(now_ns=None, path=None):
+  now_ns = time.monotonic_ns() if now_ns is None else now_ns
+  value = _read(path or handoff_path())
+  if value is None:
+    return None
+  usable = read_phone_navigation(now_ns, path) is not None
+  return {'state': 'receiving' if usable else 'ended' if not value['active'] else 'expired',
+          'source': value.get('source', 'googleMaps'), 'receivedAgeMs': max(0, (now_ns - value['received']) / 1e6),
+          'observationAgeMs': max(0, (now_ns - value['observed']) / 1e6),
+          'instruction': value.get('instruction', '') if usable else '',
+          'maneuverType': value.get('maneuverType', '') if usable else '',
+          'maneuverModifier': value.get('maneuverModifier', '') if usable else '',
+          'distanceMeters': value.get('distanceMeters') if usable else None,
+          'remainingMeters': value.get('remainingMeters') if usable else None,
+          'remainingSeconds': value.get('remainingSeconds') if usable else None}
+
+
+ROUTE_CONFLICT_NS = 3_000_000_000   # the phone must disagree this long before it counts as a conflict
+ROUTE_CHECK_M = (60., 450.)         # judged while the route's turn is this far ahead; nearer, the last verdict stands
+ROUTE_TURNS = ('left', 'right', 'sharpLeft', 'sharpRight', 'uturn')
+
+
+def _side(modifier):
+  lower = (modifier or '').lower()
+  return 'left' if lower.endswith('left') else 'right' if lower.endswith('right') else ''
+
+
+class RouteAgreement:
+  """Whether the phone app's live guidance still expects the comma route's next turn. Reported only; control is unchanged."""
+  def __init__(self):
+    self.key, self.since, self.conflict = None, 0, False
+
+  def judge(self, route, phone, *, driven, now_ns):
+    instruction = route.get('instruction') or {}
+    key = (route.get('sessionId'), route.get('revision'), instruction.get('text'), instruction.get('maneuverType'),
+           instruction.get('maneuverModifier'))
+    if key != self.key:
+      self.key, self.since, self.conflict = key, 0, False
+    verdict = self._compare(route, instruction, phone, driven, now_ns)
+    if verdict == 'conflict':
+      self.since = self.since or now_ns
+      self.conflict = self.conflict or now_ns - self.since >= ROUTE_CONFLICT_NS
+    elif verdict != 'hold':
+      self.since, self.conflict = 0, False
+    return 'routeConflict' if self.conflict else 'routeAgreed' if verdict == 'agree' else 'mapboxPriority'
+
+  @staticmethod
+  def _compare(route, instruction, phone, driven, now_ns):
+    from openpilot.starpilot.navigation.wire import PHONE_CONTROL_AGE_NS, PHONE_PASSED_SLACK_M
+    ahead, reported = instruction.get('distanceMeters'), None if phone is None else phone.get('distanceMeters')
+    if (route.get('status') != 'guiding' or not route.get('controlValid') or instruction.get('maneuverType') != 'turn' or
+        instruction.get('maneuverModifier') not in ROUTE_TURNS or type(ahead) not in (int, float) or not math.isfinite(ahead) or
+        phone is None or not phone['active'] or reported is None or driven is None or
+        not 0 < phone['observed'] <= now_ns <= phone['observed'] + PHONE_CONTROL_AGE_NS or
+        driven > reported + PHONE_PASSED_SLACK_M):
+      return 'unknown'
+    if not ROUTE_CHECK_M[0] <= ahead <= ROUTE_CHECK_M[1]:
+      return 'hold'
+    reported = max(0., reported - driven)
+    tolerance = max(120., ahead * .4)
+    if reported > ahead + tolerance:
+      return 'conflict'
+    if reported < ahead - tolerance:
+      return 'hold'   # the phone announces an earlier step the route does not have
+    sides = _side(instruction.get('maneuverModifier')), _side(phone.get('maneuverModifier'))
+    return 'conflict' if all(sides) and sides[0] != sides[1] else 'agree'
+
+
+def select_navigation(mapbox, phone, *, now_ns, drive_id, official_active=False, phone_enabled=True,
+                      diagnostics=None, local_map=None, speed=None, agreement=None):
+  def rejected(reason):
+    if diagnostics is not None:
+      diagnostics['reason'] = reason
+    return mapbox
+  # Keep ownership while Mapbox is calculating/rerouting or waiting for GPS.
+  if not phone_enabled:
+    return rejected('disabled')
+  if official_active or mapbox['status'] not in ('disabled', 'needsKey', 'noDestination'):
+    if agreement is None or official_active:
+      return rejected('mapboxPriority')
+    driven = None
+    if phone is not None and local_map is not None:
+      driven = local_map.driven_since(phone['observed'], speed=speed, now_ns=now_ns)
+    return rejected(agreement.judge(mapbox, phone, driven=driven, now_ns=now_ns))
+  from openpilot.starpilot.navigation.notification import notification_instruction
+  instruction, reason = notification_instruction(phone, now_ns=now_ns)
+  if diagnostics is not None:
+    diagnostics['reason'] = reason
+  if instruction is None:
+    return mapbox
+  from openpilot.starpilot.navigation.notification import Resolution
+  resolved = local_map.resolve(phone, speed=speed, now_ns=now_ns) if local_map is not None else Resolution('mapUnavailable')
+  if diagnostics is not None:
+    diagnostics['mapStatus'] = resolved.status
+    diagnostics['mapReason'] = resolved.reason
+    diagnostics['detail'] = (phone.get('maneuverType', ''), phone.get('maneuverModifier', ''), phone.get('distanceMeters'),
+                             resolved.kind, resolved.side, round(resolved.distance))
+  from openpilot.starpilot.navigation.wire import PHONE_CONTROL_AGE_NS, PHONE_SOURCE_PREFIX
+  # Turn speed and turn assist need a fresh observation and a junction the map agrees on; they then run on
+  # that junction's distance and fix time, not the notification's rounded one.
+  controlled = bool(resolved.control and drive_id > 0 and drive_id <= resolved.anchor_ns <= now_ns and
+                    drive_id <= phone['observed'] <= now_ns <= phone['observed'] + PHONE_CONTROL_AGE_NS)
+  observed = phone['observed']
+  if controlled:
+    observed = resolved.anchor_ns
+    instruction = {**instruction, 'maneuverType': resolved.kind, 'maneuverModifier': resolved.side,
+                   'distanceMeters': resolved.distance}
+  source = PHONE_SOURCE_PREFIX + phone.get('source', 'googleMaps')
+  return {**mapbox, 'sessionId': source + ':' + phone['session'], 'revision': str(phone['sequence']),
+          'enabled': True, 'status': 'guiding', 'source': source, 'frameMonoTime': now_ns,
+          'startedMonoTime': drive_id, 'locationMonoTime': observed if controlled else 0, 'observationMonoTime': observed,
+          'distanceKnown': phone.get('distanceMeters') is not None,
+          'totalsKnown': phone.get('remainingMeters') is not None and phone.get('remainingSeconds') is not None,
+          'destinationName': '', 'route': [], 'nextManeuver': {}, 'controlValid': controlled,
+          'instruction': instruction}

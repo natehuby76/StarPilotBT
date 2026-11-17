@@ -73,6 +73,7 @@ export const ONROAD_LAYOUT_TEMPLATE = `
               <svg ref="preview" class="gx-layout__preview" :style="{'--layout-glow': state.profile === 'compact' ? '4px' : '14px'}" :viewBox="'0 0 ' + profile.width + ' ' + profile.height" :width="profile.width" :height="profile.height"
                 @pointermove="moveDrag" @pointerup="endDrag" @pointercancel="cancelDrag" @lostpointercapture="cancelDrag"
                 role="group" :aria-label="projection ? 'StarPort layout preview' : (state.profile === 'large' ? 'Big' : 'Small') + ' layout preview'">
+                <g id="gx-layout-stage">
                 <image v-if="nativeBackdropReady" :href="state.backdrop.url" :width="profile.width" :height="profile.height" preserveAspectRatio="none" data-preview-source="device-backdrop" />
                 <template v-else>
                 <rect width="100%" height="100%" fill="#252b32" />
@@ -160,8 +161,12 @@ export const ONROAD_LAYOUT_TEMPLATE = `
                     :y1="guide.axis === 'y' ? guide.value : 0" :y2="guide.axis === 'y' ? guide.value : profile.height" vector-effect="non-scaling-stroke" />
                 </g>
                 <rect v-if="state.showEditingAids && selectionBox" class="gx-layout__outline" :x="selectionBox.x" :y="selectionBox.y" :width="selectionBox.width" :height="selectionBox.height" rx="4" fill="none" stroke="#d4baff" stroke-width="2" vector-effect="non-scaling-stroke" />
+                </g>
               </svg>
               </div>
+              <Teleport to="body"><div v-if="loupe" class="gx-layout__loupe" aria-hidden="true" :style="loupe.style">
+                <svg :viewBox="loupe.viewBox" preserveAspectRatio="xMidYMid meet"><use href="#gx-layout-stage" /></svg>
+              </div></Teleport>
               <!-- The Small screen is too short to carry the chip over the layout; it sits underneath instead. -->
               <span v-if="!projection && state.showFavoriteZones && state.showEditingAids && state.profile === 'compact'" class="gx-layout__stage-chip gx-layout__stage-chip--below" aria-hidden="true"><i class="bi bi-grid-3x3-gap"></i>Tap areas</span>
               <div v-show="state.tipsOpen" id="gx-layout-tips" class="gx-layout__tips">
@@ -241,24 +246,48 @@ export const ONROAD_LAYOUT_TEMPLATE = `
                     :value="selectedPosition.size" :disabled="!editAvailable || !!state.drag" @change="resizeSelected($event)"></label>
                 <input v-if="selectedWidget.resizable" class="gx-slider" type="range" step="1" aria-label="Size" :min="selectedWidget.resizable.min" :max="selectedWidget.resizable.max"
                   :value="selectedPosition.size" :disabled="!editAvailable || !!state.drag || !!state.layerDrag" @input="sizeSlider($event)" @change="finishColorEdit" @blur="finishColorEdit">
+                <template v-if="selectedWidget.kind === 'uniden_alerts'">
+                  <label for="layout-uniden-scale">Size · {{ selectedPosition.scale }}%</label>
+                  <input id="layout-uniden-scale" class="gx-slider" type="range" min="50" max="150" step="5"
+                    :value="selectedPosition.scale" :disabled="!editAvailable"
+                    @input="setUnidenDisplay('scale', Number($event.target.value))" @change="finishColorEdit" @blur="finishColorEdit" />
+                  <label for="layout-uniden-transparency">Background transparency · {{ selectedPosition.transparency }}%</label>
+                  <input id="layout-uniden-transparency" class="gx-slider" type="range" min="0" max="100" step="1"
+                    :value="selectedPosition.transparency" :disabled="!editAvailable"
+                    @input="setUnidenDisplay('transparency', Number($event.target.value))" @change="finishColorEdit" @blur="finishColorEdit" />
+                  <p class="gx-note">0% is solid; 100% removes the background. Text and arrows stay visible.</p>
+                  <GalaxySettingRow feedback="draft" :row="switchRow('Hide when no alert', selectedPosition.hide_when_no_alert === true)" :index="0"
+                    :disabled="!editAvailable || !!state.drag || !!state.layerDrag" :save-value="(index, value) => setUnidenDisplay('hide_when_no_alert', value === 'On')" />
+                  <p class="gx-note">Hide quiet and disconnected cards. Turn off to show detector readiness and connection status.</p>
+                  <p class="gx-note">Which alerts appear is set in Uniden Preferences, under On the screen. It applies to this widget and the full-screen warning.</p>
+                </template>
                 <template v-if="selectedWidget.opacity">
-                  <label for="layout-widget-opacity">{{ selectedWidget.box ? 'Map opacity' : ['cruise_limits', 'jetlink_status'].includes(selectedWidget.kind) ? 'Background opacity' : 'Opacity' }} · {{ selectedPosition.opacity }}%</label>
+                  <label for="layout-widget-opacity">{{ selectedWidget.box ? 'Map opacity' : ['cruise_limits', 'jetlink_status', 'network_signal'].includes(selectedWidget.kind) ? 'Background opacity' : 'Opacity' }} · {{ selectedPosition.opacity }}%</label>
                   <input id="layout-widget-opacity" class="gx-slider" type="range" step="1" :min="selectedWidget.opacity.min" :max="selectedWidget.opacity.max"
                     :value="selectedPosition.opacity" :disabled="!editAvailable || !!state.drag || !!state.layerDrag" @input="opacityInput($event)" @change="finishColorEdit" @blur="finishColorEdit">
                 </template>
                 <GalaxySettingRow feedback="draft" v-if="selectedWidget.backgroundToggle" :row="switchRow('Show background', selectedPosition.background === true)" :index="0"
                   :disabled="!editAvailable || !!state.drag || !!state.layerDrag" :save-value="(index, value) => setWidgetBackground(value)" />
-                <div v-if="projection && selectedWidget.sizes" class="gx-layout__favorite-display">
-                  <span>Size</span>
-                  <div class="gx-segment" role="group" :aria-label="selectedWidget.label + ' size'">
-                    <button v-for="size in ['big', 'small']" :key="size" class="gx-btn" type="button"
+                <div v-if="selectedWidget.sizes" class="gx-layout__favorite-display">
+                  <span>{{ selectedWidget.kind === 'network_signal' ? 'Style' : 'Size' }}</span>
+                  <div class="gx-segment" role="group" :aria-label="selectedWidget.label + (selectedWidget.kind === 'network_signal' ? ' style' : ' size')">
+                    <button v-for="size in (selectedWidget.kind === 'network_signal' ? ['ring', 'horizontal', 'vertical'] : ['big', 'small'])" :key="size" class="gx-btn" type="button"
                       :class="selectedPosition.size === size ? 'gx-btn--primary' : 'gx-btn--tonal'"
                       :aria-pressed="selectedPosition.size === size" :disabled="!editAvailable || !!state.drag || !!state.layerDrag"
-                      @click="setWidgetSize(size)">{{ size === 'big' ? 'Big' : 'Small' }}</button>
+                      @click="setWidgetSize(size)">{{ size[0].toUpperCase() + size.slice(1) }}</button>
                   </div>
                 </div>
+                <template v-if="selectedWidget.scale">
+                  <label for="layout-widget-scale">Size · {{ selectedPosition.scale }}%</label>
+                  <input id="layout-widget-scale" class="gx-slider" type="range" step="5" :min="selectedWidget.scale.min" :max="selectedWidget.scale.max"
+                    :value="selectedPosition.scale" :disabled="!editAvailable || !!state.drag || !!state.layerDrag" @input="scaleInput($event)" @change="finishColorEdit" @blur="finishColorEdit">
+                </template>
                 <GalaxySettingRow v-if="selectedWidget.collapseToggle" :row="switchRow('Collapse when paused', selectedPosition.collapse === true)" :index="0"
                   :disabled="!editAvailable || !!state.drag || !!state.layerDrag" :save-value="(index, value) => setWidgetCollapse(value)" />
+                <GalaxySettingRow feedback="draft" v-if="selectedWidget.bluetoothToggle" :row="switchRow('Show Bluetooth connections', selectedPosition.bluetooth !== false)" :index="0"
+                  :disabled="!editAvailable || !!state.drag || !!state.layerDrag" :save-value="(index, value) => setWidgetBluetooth(value)" />
+                <GalaxySettingRow feedback="draft" v-if="selectedWidget.wifiNameHeight" :row="switchRow('Show Wi-Fi network name', selectedPosition.wifiName === true)" :index="0"
+                  :disabled="!editAvailable || !!state.drag || !!state.layerDrag" :save-value="(index, value) => setWidgetWifiName(value)" />
                 <p v-if="selectedWidget.defaultAnchor === 'driver_side'" class="gx-note">The default position follows the driver’s side. A moved position stays where you place it.</p>
                 <p v-if="selectedWidget.note" class="gx-note">{{ selectedWidget.note }}</p>
                 <div v-if="selectedWidget.kind === 'clock'" class="gx-row"><div class="gx-row__info"><span class="gx-row__label">Use 24-hour time</span></div>

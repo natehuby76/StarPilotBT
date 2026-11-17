@@ -101,7 +101,8 @@ def make_server(*, port=8082, host='127.0.0.1', monitor=None, owner=None, crashe
                 starport_client=None, navigation=None, offline_maps=None, drive_state=None, cloud_provider=None, cloud_offroad=None, projection_layout=None,
                 local_access=None, tmux_live=None, starport_logs=None, starport_log_sender=None, hotspot=None, toyota_tools=None,
                 replay_client=None, replay_root=None,
-                spotify_setup=None, companion=None, phone_location=None, reverse_proxy=None, local_hostnames=None, sound_preview=None):
+                spotify_setup=None, companion=None, phone_location=None, reverse_proxy=None, local_hostnames=None, sound_preview=None, phone_navigation=None,
+                phone_notifications=None):
   from openpilot.starpilot.galaxy.local_hostnames import LocalHostnames
   hostname_source = local_hostnames if local_hostnames is not None else LocalHostnames(clock=clock)
   from openpilot.starpilot.galaxy.companion import CompanionRegistry, APK_PATH
@@ -111,6 +112,10 @@ def make_server(*, port=8082, host='127.0.0.1', monitor=None, owner=None, crashe
     from openpilot.common.params import Params
     training_results = FlmTrainingResults(params=Params())
   training_results_source = training_results
+  from openpilot.starpilot.navigation.phone import PhoneNavigationPublisher
+  phone_navigation_source = phone_navigation if phone_navigation is not None else PhoneNavigationPublisher()
+  from openpilot.starpilot.system.starport.phone_notifications import PhoneNotifications
+  phone_notifications_source = phone_notifications if phone_notifications is not None else PhoneNotifications()
   phone_location_source = phone_location if phone_location is not None else PhoneGpsPublisher()
   cloud = cloud_provider
   hotspot_source = hotspot
@@ -123,6 +128,16 @@ def make_server(*, port=8082, host='127.0.0.1', monitor=None, owner=None, crashe
         from openpilot.starpilot.galaxy.hotspot import HotspotSettings
         hotspot_source = HotspotSettings()
     return hotspot_source
+
+  network_source = None
+
+  def network_owner():
+    nonlocal network_source
+    with hotspot_source_lock:
+      if network_source is None:
+        from openpilot.starpilot.galaxy.network_prefs import NetworkSettings
+        network_source = NetworkSettings()
+    return network_source
 
   def cloud_status():
     from openpilot.starpilot.connect.provider import status
@@ -222,6 +237,16 @@ def make_server(*, port=8082, host='127.0.0.1', monitor=None, owner=None, crashe
         evidence_source.close()
       raise
   configuration_allowed = pairing_authority.configuration_allowed if pairing_authority is not None else parked
+
+  def phone_driving():
+    """Phone GPS runs from ignition on; only confirmed offroad with ignition off rests it, and errors count as driving."""
+    try:
+      if not parked():
+        return True
+      sm = evidence_source.snapshot() if evidence_source is not None else None
+      return sm is not None and any(p.ignitionLine or p.ignitionCan for p in sm['pandaStates'])
+    except Exception:
+      return True
   def cloud_allowed():
     from openpilot.common.params import Params
     return bool(parked()) and bool(cloud_offroad() if cloud_offroad is not None else Params().get_bool('IsOffroad'))
@@ -244,6 +269,8 @@ def make_server(*, port=8082, host='127.0.0.1', monitor=None, owner=None, crashe
   plots_lock = threading.Lock()
   bluetooth_lock = threading.Lock()
   bluetooth_source = bluetooth
+  uniden_source = None
+  uniden_lock = threading.Lock()
   starport_setup_source = starport_setup
   spotify_setup_source = spotify_setup
   starport_client_source = starport_client
@@ -379,6 +406,15 @@ def make_server(*, port=8082, host='127.0.0.1', monitor=None, owner=None, crashe
   def bluetooth_paired(address, name, uuids):
     link_music_phone(address)
     spotify_owner().adopt_phone(address, name, uuids)
+
+  def uniden_owner():
+    nonlocal uniden_source
+    with uniden_lock:
+      if uniden_source is None:
+        from openpilot.common.params import Params
+        from openpilot.starpilot.uniden.service import DetectorService
+        uniden_source = DetectorService(Params(), configuration_allowed)
+      return uniden_source
 
   def bluetooth_owner():
     nonlocal bluetooth_source
@@ -766,6 +802,16 @@ def make_server(*, port=8082, host='127.0.0.1', monitor=None, owner=None, crashe
         else:
           self.camera_video(path.removeprefix('/api/recordings/media/'))
         return
+      if path == '/api/companion/location':
+        if not self.require_session():
+          return
+        if getattr(self.server, 'remote_transport', False) or not self.direct_local():
+          self.json(403, {'error': 'Phone location requires a direct local connection'})
+          return
+        # Phone polls this while its GPS rests; timing is sampled last so the clock bound stays tight.
+        driving = phone_driving()
+        self.json(200, {**phone_location_source.timing(), 'driving': driving})
+        return
       if path == '/api/connect/proxy':
         if not self.require_session():
           return
@@ -856,6 +902,16 @@ def make_server(*, port=8082, host='127.0.0.1', monitor=None, owner=None, crashe
           result = hotspot_owner().snapshot(parked())
         except (OSError, ValueError):
           self.json(503, {'error': 'Hotspot settings are unavailable.'})
+        else:
+          if self.require_session():
+            self.json(200, result)
+      elif path == '/api/galaxy/networks':
+        if not self.require_session():
+          return
+        try:
+          result = network_owner().snapshot(parked())
+        except (OSError, ValueError):
+          self.json(503, {'error': 'Network settings are unavailable.'})
         else:
           if self.require_session():
             self.json(200, result)
@@ -1118,6 +1174,22 @@ def make_server(*, port=8082, host='127.0.0.1', monitor=None, owner=None, crashe
           result = starport_setup_owner().status(identity)
         except Exception:
           self.json(503, {'error': 'StarPort setup is unavailable'})
+        else:
+          if self.settings_session() == identity:
+            self.json(200, result)
+          else:
+            self.json(401, {'error': 'Sign in to Galaxy'})
+      elif path == '/api/starport/notifications':
+        if not self.require_session():
+          return
+        identity = self.settings_session()
+        if identity is None:
+          self.json(401, {'error': 'Sign in to Galaxy'})
+          return
+        try:
+          result = phone_notifications_source.snapshot(content=self.direct_local())
+        except OSError:
+          self.json(503, {'error': 'Phone notification settings are unavailable'})
         else:
           if self.settings_session() == identity:
             self.json(200, result)
@@ -1699,14 +1771,15 @@ def make_server(*, port=8082, host='127.0.0.1', monitor=None, owner=None, crashe
         if self.require_session():
           self.json(404, {'error': 'Not found'})
         return
-      if path not in ('/api/companion/uplink', '/api/companion/settings', '/api/companion/location',
+      if path not in ('/api/companion/uplink', '/api/companion/settings', '/api/companion/location', '/api/companion/navigation',
+                      '/api/companion/notification', '/api/starport/notifications', '/api/starport/notifications/test',
                       '/api/connect/proxy', '/api/connect/provider', '/api/auth/login', '/api/auth/logout', '/api/settings/preview', '/api/settings/confirm',
                       '/api/settings/recovery/preview', '/api/settings/recovery/confirm',
                       '/api/settings/flm-backup/preview', '/api/settings/flm-backup/confirm',
                       '/api/settings/reset-default', '/api/settings/restore', '/api/recordings/action',
                       '/api/replay/start', '/api/replay/control', '/api/replay/stop',
                       '/api/replay/export-start',
-                      '/api/galaxy/pair', '/api/galaxy/unpair', '/api/galaxy/device-name', '/api/galaxy/hotspot',
+                      '/api/galaxy/pair', '/api/galaxy/unpair', '/api/galaxy/device-name', '/api/galaxy/hotspot', '/api/galaxy/networks',
                       '/api/cameras/snapshot', '/api/cameras/white-balance',
                       '/api/starport/layout', '/api/starport/enable', '/api/starport/control', '/api/starport/pairing',
                       '/api/starport/logs/send',
@@ -1714,7 +1787,7 @@ def make_server(*, port=8082, host='127.0.0.1', monitor=None, owner=None, crashe
                       '/api/spotify/enable', '/api/spotify/key', '/api/spotify/preferences', '/api/spotify/control', '/api/spotify/maintenance',
                       '/api/ui/layout', '/api/ui/layout/preview', '/api/favorites/slots',
                       '/api/maps/start', '/api/maps/cancel',
-                        '/api/bluetooth/action', '/api/controllers/action',
+                        '/api/bluetooth/action', '/api/bluetooth/uniden', '/api/controllers/action',
                       '/api/models/active', '/api/models/preferences', '/api/models/download', '/api/models/download_all',
                       '/api/models/cancel', '/api/models/delete', '/api/models/refresh_manifest', '/api/models/jetlink',
                       '/api/models/laboratory', '/api/models/laboratory/download', '/api/models/laboratory/delete',
@@ -1740,7 +1813,7 @@ def make_server(*, port=8082, host='127.0.0.1', monitor=None, owner=None, crashe
       except ValueError:
         size = -1
       max_size = (256 * 1024 if path == '/api/settings/restore' else 66 * 1024 if path == '/api/settings/flm-backup/preview' else
-                  17408 if path in ('/api/ui/layout', '/api/ui/layout/preview') else 4096)
+                  17408 if path in ('/api/ui/layout', '/api/ui/layout/preview') else 16384 if path == '/api/companion/notification' else 4096)
       if not 0 < size <= max_size:
         self.json(413, {'error': 'Invalid request size'})
         return
@@ -1786,12 +1859,36 @@ def make_server(*, port=8082, host='127.0.0.1', monitor=None, owner=None, crashe
       if path.startswith('/api/replay/'):
         replay_api.post(self, path, payload)
         return
+      if path == '/api/companion/navigation':
+        if getattr(self.server, 'remote_transport', False) or not self.direct_local():
+          self.json(403, {'error': 'Phone navigation requires a direct local connection'})
+          return
+        try:
+          result = phone_navigation_source.publish(payload)
+          from openpilot.starpilot.navigation.phone import read_verdict
+          self.json(200, {**result, 'forwardingEnabled': navigation_owner().read().get('phoneNavigation', False),
+                          'verdict': read_verdict(time.monotonic_ns())})
+        except ValueError as error:
+          self.json(400, {'error': str(error)})
+        return
+      if path == '/api/companion/notification':
+        if getattr(self.server, 'remote_transport', False) or not self.direct_local():
+          self.json(403, {'error': 'Phone notifications require a direct local connection'})
+          return
+        try:
+          self.json(200, phone_notifications_source.publish(payload))
+        except ValueError as error:
+          self.json(400, {'error': str(error)})
+        except OSError:
+          self.json(503, {'error': 'Phone notifications are unavailable'})
+        return
       if path == '/api/companion/location':
         if getattr(self.server, 'remote_transport', False) or not self.direct_local():
           self.json(403, {'error': 'Phone location requires a direct local connection'})
           return
         try:
-          self.json(200, phone_location_source.publish(payload))
+          result = phone_location_source.publish(payload)
+          self.json(200, {**result, 'driving': phone_driving()})
         except ValueError as error:
           self.json(400, {'error': str(error)})
         return
@@ -1810,6 +1907,25 @@ def make_server(*, port=8082, host='127.0.0.1', monitor=None, owner=None, crashe
           self.json(400, {'error': str(error)})
         except OSError:
           self.json(503, {'error': 'Companion settings unavailable'})
+        else:
+          self.json(200, result)
+        return
+      if path == '/api/galaxy/networks':
+        identity = self.settings_session()
+        if identity is None:
+          self.json(401, {'error': 'Sign in to Galaxy'})
+          return
+        try:
+          with effect_lock:
+            result = network_owner().apply(payload, lambda: self.settings_session() == identity and parked())
+        except PermissionError:
+          self.json(409, {'error': 'Park before changing network settings.'})
+        except FileExistsError as error:
+          self.json(409, {'error': str(error)})
+        except ValueError as error:
+          self.json(400, {'error': str(error)})
+        except OSError:
+          self.json(503, {'error': 'Network settings are unavailable.'})
         else:
           self.json(200, result)
         return
@@ -2468,6 +2584,41 @@ def make_server(*, port=8082, host='127.0.0.1', monitor=None, owner=None, crashe
           else:
             self.json(401, {'error': 'Sign in to Galaxy'})
         return
+      if path == '/api/starport/notifications/test':
+        identity = self.settings_session()
+        if identity is None:
+          self.json(401, {'error': 'Sign in to Galaxy'})
+          return
+        if payload != {}:
+          self.json(400, {'error': 'Invalid request'})
+          return
+        try:
+          result = phone_notifications_source.publish_test('galaxy')
+        except OSError:
+          self.json(503, {'error': 'Phone notifications are unavailable'})
+        else:
+          if self.settings_session() == identity:
+            self.json(200, result)
+          else:
+            self.json(401, {'error': 'Sign in to Galaxy'})
+        return
+      if path == '/api/starport/notifications':
+        identity = self.settings_session()
+        if identity is None:
+          self.json(401, {'error': 'Sign in to Galaxy'})
+          return
+        try:
+          result = phone_notifications_source.update(payload)
+        except ValueError as error:
+          self.json(400, {'error': str(error)})
+        except OSError:
+          self.json(503, {'error': 'Phone notification settings are unavailable'})
+        else:
+          if self.settings_session() == identity:
+            self.json(200, result)
+          else:
+            self.json(401, {'error': 'Sign in to Galaxy'})
+        return
       if path == '/api/starport/enable':
         if type(payload) is not dict or set(payload) not in ({'enabled'}, {'enabled', 'enableBluetooth'}) or \
            type(payload['enabled']) is not bool or type(payload.get('enableBluetooth', False)) is not bool or \
@@ -2759,6 +2910,44 @@ def make_server(*, port=8082, host='127.0.0.1', monitor=None, owner=None, crashe
           else:
             self.json(401, {'error': 'Sign in to Galaxy'})
         return
+      if path == '/api/bluetooth/uniden':
+        identity = self.settings_session()
+        if identity is None:
+          self.json(401, {'error': 'Sign in to Galaxy'})
+          return
+        def detector_exchange(config, mute, situation=None):
+          from openpilot.starpilot.uniden.transport import exchange
+          if self.settings_session() != identity:
+            raise BluetoothRejected('Session expired', code='session_expired')
+          if starport_setup_owner().enabled():
+            try:
+              delegated = self.starport_command(identity, 'uniden', address=config['address'], model=config['model'], mute=mute,
+                                                auto_mute=config['auto_mute'], frequency_rules=config['frequency_rules'],
+                                                situation=situation)
+            except (OSError, RuntimeError):
+              if mute is not None:
+                raise BluetoothUnavailable('Mute delivery was not confirmed; check the detector') from None
+              delegated = {'handled': False}  # Local admission still fails if AA owns the lock.
+            if delegated.get('handled'):
+              if 'error_code' in delegated:
+                raise BluetoothRejected(delegated.get('message', 'Bluetooth is busy'), code=delegated['error_code'])
+              return delegated['detector']
+          return exchange(bluetooth_owner(), config['address'], config['model'], identity, mute=mute,
+                          auto_mute=config['auto_mute'], frequency_rules=config['frequency_rules'], situation=situation)
+        try:
+          result = uniden_owner().request(payload, detector_exchange, valid=lambda: self.settings_session() == identity)
+        except ValueError as error:
+          self.json(400, {'error': str(error)})
+        except BluetoothRejected as error:
+          self.json(409, {'error': str(error), 'code': error.code})
+        except (BluetoothUnavailable, OSError, RuntimeError):
+          self.json(503, {'error': 'Detector connection unavailable'})
+        else:
+          if self.settings_session() == identity:
+            self.json(200, result)
+          else:
+            self.json(401, {'error': 'Sign in to Galaxy'})
+        return
       if path == '/api/bluetooth/action':
         identity = self.settings_session()
         if identity is None:
@@ -2806,8 +2995,10 @@ def make_server(*, port=8082, host='127.0.0.1', monitor=None, owner=None, crashe
                 raise BluetoothUnavailable('service_unavailable')
               if 'error_code' in delegated:
                 code = delegated['error_code']
-                if type(code) is str and code in ('busy', 'park_required', 'changed', 'session_expired', 'projection_active'):
-                  raise BluetoothRejected('Android Auto could not complete the Bluetooth change', code=code)
+                if type(code) is str and code in ('busy', 'park_required', 'changed', 'session_expired', 'projection_active', 'unreachable'):
+                  why = delegated.get('message')
+                  raise BluetoothRejected(f'Android Auto: {why}' if type(why) is str and why else
+                                          'Android Auto could not complete the Bluetooth change', code=code)
                 unavailable = ('service_unavailable', 'adapter_unavailable', 'radio_unavailable', 'radio_preference_unavailable')
                 raise BluetoothUnavailable('Android Auto Bluetooth service is unavailable',
                                            code=code if type(code) is str and code in unavailable else 'service_unavailable')

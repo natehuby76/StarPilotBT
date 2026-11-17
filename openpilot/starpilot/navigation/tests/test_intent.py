@@ -5,7 +5,7 @@ import pytest
 
 from openpilot.cereal import messaging, log
 from openpilot.common.constants import CV
-from openpilot.starpilot.navigation.intent import current_instruction, turn_desire, cruise_ceiling, turn_speed
+from openpilot.starpilot.navigation.intent import current_instruction, matching_turn_signal, turn_desire, cruise_ceiling, turn_speed
 
 
 NOW = 20_000_000_000
@@ -58,6 +58,35 @@ def test_original_turn_ceiling_and_override(sm):
   sm['carState'].gasPressed = False
   cp.openpilotLongitudinalControl = False
   assert cruise_ceiling(sm, cp, NOW, 20.) is None
+
+
+def civic_cp(fingerprint='HONDA_CIVIC_2022'):
+  return NS(openpilotLongitudinalControl=True, passive=False, dashcamOnly=False, minSteerSpeed=0., brand='honda',
+            carFingerprint=fingerprint)
+
+
+def test_civic_turn_ceiling_advances_between_route_fixes(sm):
+  nav = sm['starpilotNavigation'].navigation
+  nav.instruction.distanceMeters = 300.
+  nav.locationMonoTime = NOW - 1_000_000_000
+  sm['carState'].vEgo = 15.
+  expected = ((14 * CV.MPH_TO_MS) ** 2 + 2 * .45 * (300 - 15 - 8)) ** .5
+  assert cruise_ceiling(sm, civic_cp(), NOW, 30.) == pytest.approx(expected)
+  stale = ((14 * CV.MPH_TO_MS) ** 2 + 2 * .45 * (300 - 8)) ** .5
+  assert cruise_ceiling(sm, civic_cp('HONDA_CIVIC_BOSCH'), NOW, 30.) == pytest.approx(stale)
+
+
+def test_civic_turn_ceiling_brakes_only_as_hard_as_needed_above_profile(sm):
+  nav = sm['starpilotNavigation'].navigation
+  nav.instruction.distanceMeters = 174.
+  sm['carState'].vEgo = 19.
+  target = 14 * CV.MPH_TO_MS
+  needed = (19. ** 2 - target ** 2) / (2 * (174 - 8))
+  assert cruise_ceiling(sm, civic_cp(), NOW, 30.) == pytest.approx(19. - needed)
+  profile = (target ** 2 + 2 * .45 * (174 - 8)) ** .5
+  assert cruise_ceiling(sm, civic_cp('HONDA_CIVIC_BOSCH'), NOW, 30.) == pytest.approx(profile)
+  sm['carState'].vEgo = profile - 1.
+  assert cruise_ceiling(sm, civic_cp(), NOW, 30.) == pytest.approx(profile)
 
 
 @pytest.mark.parametrize('kind,modifier,mph', [('turn', 'left', 14), ('turn', 'sharpRight', 10), ('turn', 'uturn', 5),
@@ -158,3 +187,199 @@ def test_approaching_turn_does_not_start_or_replace_lane_change(sm):
   helper.update(cs, True, 1., navigation_turn=turn)
   assert helper.lane_change_state == log.LaneChangeState.laneChangeStarting
   assert helper.desire == log.Desire.laneChangeRight
+
+
+CP = NS(openpilotLongitudinalControl=True, passive=False, dashcamOnly=False, minSteerSpeed=0., brand='toyota', carFingerprint='X')
+
+
+def phone(sm, source='phone:googleMaps', observed=NOW - 1_000_000_000, distance=30.):
+  nav = sm['starpilotNavigation'].navigation
+  nav.source, nav.locationMonoTime = source, observed
+  nav.instruction.distanceMeters = distance
+  nav.nextManeuver = NS(maneuverType='', maneuverModifier='', distanceMeters=0.)
+  return nav
+
+
+@pytest.mark.parametrize('source', ['phone:googleMaps', 'phone:waze'])
+def test_verified_phone_guidance_slows_and_assists_the_turn(sm, source):
+  phone(sm, source)
+  assert current_instruction(sm, NOW) is not None
+  assert turn_desire(sm, NOW, log.Desire.none, supported=True) == log.Desire.turnRight
+  assert cruise_ceiling(sm, CP, NOW, 20.) is not None
+
+
+def test_phone_distance_is_advanced_by_distance_driven(sm):
+  phone(sm, distance=60.)
+  sm['carState'].vEgo = 8.
+  sm['starpilotNavigation'].navigation.instruction.maneuverModifier = 'left'
+  sm['carState'].leftBlinker, sm['carState'].rightBlinker = True, False
+  # 60 m minus 8 m/s over 5 s leaves 20 m, inside the assist window; 60 m alone would not be.
+  phone(sm, observed=NOW - 5_000_000_000, distance=60.)
+  assert turn_desire(sm, NOW, log.Desire.none, supported=True) == log.Desire.turnLeft
+  phone(sm, observed=NOW - 1_000_000_000, distance=200.)
+  assert turn_desire(sm, NOW, log.Desire.none, supported=True) == log.Desire.none
+
+
+def test_stale_or_unverified_phone_guidance_is_inert(sm):
+  nav = phone(sm, observed=NOW - 26_000_000_000)
+  assert current_instruction(sm, NOW) is None
+  assert cruise_ceiling(sm, CP, NOW, 20.) is None
+  phone(sm)
+  nav.controlValid = False
+  assert current_instruction(sm, NOW) is None
+  phone(sm, observed=5_000_000_000)
+  nav.controlValid = True
+  assert current_instruction(sm, NOW) is None
+
+
+
+def test_phone_guidance_ends_once_the_reported_turn_is_passed(sm):
+  sm['carState'].vEgo = 15.
+  phone(sm, observed=NOW - 10_000_000_000, distance=30.)
+  # 150 m driven against a 30 m turn with no newer notification.
+  assert turn_desire(sm, NOW, log.Desire.none, supported=True) == log.Desire.none
+  assert cruise_ceiling(sm, CP, NOW, 20.) is None
+
+
+def test_arrow_only_phone_turn_takes_its_side_from_the_signal(sm):
+  nav = sm['starpilotNavigation'].navigation
+  nav.source, nav.instruction.maneuverModifier = 'phone:googleMaps', ''
+  assert turn_desire(sm, NOW, log.Desire.none, supported=True) == log.Desire.turnRight
+  assert matching_turn_signal(sm, NOW, supported=True)
+  sm['carState'].rightBlinker, sm['carState'].leftBlinker = False, True
+  assert turn_desire(sm, NOW, log.Desire.none, supported=True) == log.Desire.turnLeft
+  sm['carState'].leftBlinker = False
+  assert turn_desire(sm, NOW, log.Desire.none, supported=True) == log.Desire.none
+  assert not matching_turn_signal(sm, NOW, supported=True)
+  cp = NS(openpilotLongitudinalControl=True, passive=False, dashcamOnly=False, minSteerSpeed=0.)
+  assert cruise_ceiling(sm, cp, NOW, 20.) == pytest.approx(((14 * CV.MPH_TO_MS) ** 2 + 2 * .45 * (30 - 8)) ** .5)
+  # A routed turn always names its side; without one the signal does not choose it.
+  nav.source = ''
+  sm['carState'].leftBlinker = True
+  assert turn_desire(sm, NOW, log.Desire.none, supported=True) == log.Desire.none
+
+
+def engaged(sm, enabled=True, state='pid'):
+  sm.update(selfdriveState=NS(enabled=enabled), controlsState=NS(longControlState=state))
+  return sm
+
+
+def test_cue_tells_the_driver_what_the_turn_is_waiting_for(sm):
+  from openpilot.starpilot.navigation.intent import turn_cue
+  cs = engaged(sm)['carState']
+  assert turn_cue(sm, CP, NOW) == 'assist'
+  # Signalled but not yet where the turn desire acts.
+  sm['starpilotNavigation'].navigation.instruction.distanceMeters = 70.
+  assert turn_desire(sm, NOW, log.Desire.none, supported=True) == log.Desire.none
+  assert turn_cue(sm, CP, NOW) == 'ready'
+  sm['starpilotNavigation'].navigation.instruction.distanceMeters = 30.
+  cs.rightBlindspot = True
+  assert turn_cue(sm, CP, NOW) == 'blindspot'
+  cs.rightBlindspot = cs.rightBlinker = False
+  assert turn_cue(sm, CP, NOW) == 'signalRight'
+  sm['starpilotNavigation'].navigation.instruction.maneuverModifier = 'sharpLeft'
+  assert turn_cue(sm, CP, NOW) == 'signalLeft'
+  # The wrong signal is not prompted; the slowdown still shows.
+  cs.rightBlinker, cs.vEgo = True, 9.
+  assert turn_cue(sm, CP, NOW) == 'slowing'
+  for patch in ({'enabled': False}, {'state': 'off'}):
+    assert turn_cue(engaged(sm, **patch), CP, NOW) == ''
+  engaged(sm)
+  cs.vEgo = 2.
+  assert turn_cue(sm, CP, NOW) == ''
+  sm['starpilotNavigation'].navigation.controlValid = False
+  cs.vEgo, cs.rightBlinker = 5., False
+  assert turn_cue(sm, CP, NOW) == ''
+
+
+def test_cue_for_an_arrow_only_phone_turn_asks_for_either_signal(sm):
+  from openpilot.starpilot.navigation.intent import turn_cue
+  phone(engaged(sm)).instruction.maneuverModifier = ''
+  sm['carState'].rightBlinker = False
+  assert turn_cue(sm, CP, NOW) == 'signal'
+  sm['carState'].leftBlinker = True
+  assert turn_cue(sm, CP, NOW) == 'assist'
+  # Far from the turn only the slowdown is reported, and only once it binds.
+  sm['starpilotNavigation'].navigation.instruction.distanceMeters = 300.
+  sm['carState'].vEgo = 20.
+  assert turn_cue(sm, CP, NOW) == 'slowing'
+  sm['carState'].vEgo = 10.
+  assert turn_cue(sm, CP, NOW) == ''
+
+
+def test_routed_turn_distance_is_advanced_between_route_frames(sm):
+  # Routes publish about once a second: a frame 0.9 s old at 6.7 m/s puts a 40 m turn at 46 m, outside the window.
+  nav = sm['starpilotNavigation'].navigation
+  nav.instruction.distanceMeters, nav.frameMonoTime, nav.locationMonoTime = 45.6, NOW - 900_000_000, NOW - 2_000_000_000
+  sm['carState'].vEgo = 6.7
+  assert turn_desire(sm, NOW, log.Desire.none, supported=True) == log.Desire.turnRight
+  assert matching_turn_signal(sm, NOW, supported=True)
+  nav.frameMonoTime = NOW
+  assert turn_desire(sm, NOW, log.Desire.none, supported=True) == log.Desire.none
+  # The routed ceiling keeps its own distance handling.
+  nav.frameMonoTime = NOW - 900_000_000
+  assert cruise_ceiling(sm, CP, NOW, 20.) == pytest.approx(turn_speed(nav.instruction, 0.))
+
+
+def test_stop_cleared_one_sample_after_pulling_away_does_not_hold_the_turn(sm):
+  # c6 Grand Teton: standstill cleared while the planner still said stop, which held the turn for the whole approach.
+  from openpilot.starpilot.navigation.intent import TurnIntent
+  owner = TurnIntent()
+  sm['longitudinalPlan'] = NS(modelMonoTime=NOW, shouldStop=True)
+  sm.logMonoTime['longitudinalPlan'] = NOW
+  sm.valid['longitudinalPlan'] = sm.alive['longitudinalPlan'] = True
+  cs, plan = sm['carState'], sm['longitudinalPlan']
+  def sample(model_stop=False):
+    return owner.select(sm, NOW, log.Desire.none, supported=True, model_stop=model_stop)
+  assert sample() == log.Desire.none
+  cs.standstill, cs.vEgo = True, 0.
+  assert sample() == log.Desire.none
+  cs.standstill, cs.vEgo = False, .1
+  assert sample() == log.Desire.none
+  plan.shouldStop = False
+  assert sample() == log.Desire.turnRight
+  # It flickers back on while creeping away; each clear sample releases it again.
+  plan.shouldStop = True
+  assert sample() == log.Desire.none
+  plan.shouldStop = False
+  assert sample() == log.Desire.turnRight
+  # A signal that starts as the car pulls away is released the same way.
+  cs.rightBlinker = False
+  assert sample() == log.Desire.none
+  cs.rightBlinker = plan.shouldStop = True
+  assert sample() == log.Desire.none
+  plan.shouldStop = False
+  assert sample() == log.Desire.turnRight
+  cs.vEgo = 5.
+  assert sample() == log.Desire.turnRight
+  # Clear of the stop, a new stop request is a new approach and holds until standstill.
+  plan.shouldStop = True
+  assert sample() == log.Desire.none
+  plan.shouldStop = False
+  assert sample() == log.Desire.none
+  cs.rightBlinker = False
+  assert sample() == log.Desire.none
+  cs.rightBlinker = True
+  assert sample() == log.Desire.turnRight
+
+
+def test_ceiling_takes_the_slower_of_the_turn_and_the_next_maneuver(sm):
+  nav = sm['starpilotNavigation'].navigation
+  nav.instruction = NS(maneuverType='turn', maneuverModifier='right', distanceMeters=300.)
+  nav.nextManeuver = NS(maneuverType='turn', maneuverModifier='uturn', distanceMeters=320.)
+  assert cruise_ceiling(sm, CP, NOW, 30.) == pytest.approx(turn_speed(nav.nextManeuver, 0.))
+  nav.nextManeuver = NS(maneuverType='turn', maneuverModifier='left', distanceMeters=900.)
+  assert cruise_ceiling(sm, CP, NOW, 30.) == pytest.approx(turn_speed(nav.instruction, 0.))
+
+
+@pytest.mark.parametrize('source', ['', 'phone:googleMaps'])
+@pytest.mark.parametrize('kind,modifier', [('fork', 'slightRight'), ('fork', 'right'), ('off ramp', 'right'), ('on ramp', 'right'),
+                                           ('merge', 'right'), ('continue', 'right'), ('turn', 'slightRight')])
+def test_keep_ramp_merge_and_continue_neither_slow_nor_turn(sm, source, kind, modifier):
+  nav = sm['starpilotNavigation'].navigation
+  nav.source = source
+  nav.instruction = NS(maneuverType=kind, maneuverModifier=modifier, distanceMeters=30.)
+  nav.nextManeuver = NS(maneuverType=kind, maneuverModifier=modifier, distanceMeters=60.)
+  assert turn_desire(sm, NOW, log.Desire.none, supported=True) == log.Desire.none
+  assert not matching_turn_signal(sm, NOW, supported=True)
+  assert cruise_ceiling(sm, CP, NOW, 30.) is None
