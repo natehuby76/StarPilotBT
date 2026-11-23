@@ -56,8 +56,7 @@ TTL = 60.0
 CAR_CONTROL_SECTIONS = (
   ("lateral", "Lateral (Steering)", ("aol", "lane_change", "lane", "torque", "torque/developer")),
   ("longitudinal", "Longitudinal (Speed & Following)",
-   ("profiles", "conditional", "curve", "slc", "aggressive", "standard", "relaxed", "traffic")),
-  ("navigation_planner", "Navigation Planner", ("navigation_planner",)),
+   ("profiles", "conditional", "curve", "slc", "aggressive", "standard", "relaxed", "traffic", "navigation_planner")),
   ("wheel", "Wheel Controls", ("wheel",)),
   ("visual", "Visual (Display & UI)", ("display", "appearance", "pip")),
   ("sounds", "Sounds & Alerts", ("sounds",)),

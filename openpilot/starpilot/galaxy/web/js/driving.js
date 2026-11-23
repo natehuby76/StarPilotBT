@@ -27,8 +27,6 @@ export const DRIVING_GROUPS = Object.freeze([
     { page: "slc", title: "Speed Limit Controller", detail: "Dashboard and qualified vision source choices" },
     { page: "profiles", title: "Longitudinal profiles", detail: "Saved acceleration, braking, and following profiles" },
     { page: "traffic", title: "Traffic Mode", detail: "Saved follow, jerk, and profile curves" },
-  ] },
-  { title: "Navigation Planner", items: [
     { page: "navigation_planner", title: "Navigation Planner", detail: "Adjust when to slow for routed turns" },
   ] },
 ])
