@@ -24,7 +24,7 @@ class Clock:
 class Messages:
   def __init__(self, clock):
     self.clock = clock
-    names = ['starpilotNavigation', *GPS_SERVICES, 'deviceState']
+    names = ['starpilotNavigation', *GPS_SERVICES, 'deviceState', 'carState', 'carControl', 'modelV2', 'laneChangeAssistWire']
     self.seen = dict.fromkeys(names, True)
     self.alive = dict.fromkeys(names, True)
     self.valid = dict.fromkeys(names, True)
@@ -53,7 +53,8 @@ def source():
   messages = Messages(clock)
   with patch('openpilot.cereal.messaging.SubMaster', return_value=messages) as factory:
     result = NavigationStatusSource(mono_clock=lambda: clock.mono, boot_clock=clock.boot)
-  assert factory.call_args.args[0] == ['starpilotNavigation', 'gpsLocationExternal', 'gpsLocation', 'starpilotCarState', 'deviceState']
+  assert factory.call_args.args[0] == ['starpilotNavigation', 'gpsLocationExternal', 'gpsLocation', 'starpilotCarState',
+                                       'deviceState', 'carState', 'carControl', 'modelV2', 'laneChangeAssistWire']
   clock.mono += 100_000_000
   messages.fix('gpsLocationExternal')
   messages.fix('gpsLocation', stamp=clock.mono - 30_000_000, longitude=-90., latitude=40.)

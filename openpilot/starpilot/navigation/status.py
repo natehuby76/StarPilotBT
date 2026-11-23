@@ -14,7 +14,8 @@ def boot_time_ns():
 class NavigationStatusSource:
   def __init__(self, *, mono_clock=time.monotonic_ns, boot_clock=boot_time_ns):
     from openpilot.cereal import messaging
-    self.sm = messaging.SubMaster(list(dict.fromkeys(['starpilotNavigation', *GPS_SERVICES, 'deviceState', 'carState', 'carControl', 'modelV2', 'laneChangeAssistWire'])))
+    services = ['starpilotNavigation', *GPS_SERVICES, 'deviceState', 'carState', 'carControl', 'modelV2', 'laneChangeAssistWire']
+    self.sm = messaging.SubMaster(list(dict.fromkeys(services)))
     self.mono_clock, self.boot_clock = mono_clock, boot_clock
     self.gps_after_mono_ns = mono_clock()
     self.gps_offset_ns = None
@@ -38,7 +39,7 @@ class NavigationStatusSource:
     from openpilot.starpilot.navigation.intent import current_instruction, matching_turn_signal
     from openpilot.starpilot.lateral.lane_change_status_wire import Direction, Phase, decode, fresh_for_model
     sm, now = self.sm, self.mono_clock()
-    if current_instruction(sm, now) is None:
+    if sm is None or current_instruction(sm, now) is None:
       return None
     cs, cc = sm['carState'], sm['carControl']
     if not cc.latActive or cs.standstill or cs.leftBlinker == cs.rightBlinker:
