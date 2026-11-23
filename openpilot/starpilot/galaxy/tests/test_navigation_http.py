@@ -100,15 +100,17 @@ class NavigationHttpTest(unittest.TestCase):
     path = '/api/navigation/phone-trip'
     self.assertEqual(self.request(path, payload=body, remote=True)[0], 401)
     self.parked = False
-    self.assertEqual(self.request(path, payload=body, cookie=self.local_cookie)[0], 409)
-    self.parked = True
+    status, capabilities, _ = self.request('/api/navigation/status', cookie=self.local_cookie)
+    self.assertEqual(status, 200)
+    self.assertIs(capabilities['phoneRouteTripOnroad'], True)
     invalid = dict(body, destination=dict(place, longitude=-81))
     self.assertEqual(self.request(path, payload=invalid, cookie=self.local_cookie)[0], 400)
     self.assertEqual(nav.read()['revision'], rev)
     code, active, _ = self.request(path, payload=body, cookie=self.local_cookie)
     self.assertEqual(code, 200)
     self.assertEqual(active['activeRouteSource'], 'iphone')
-    self.assertEqual(self.request(path, payload=body, cookie=self.local_cookie)[0], 409)
+    status, conflict, _ = self.request(path, payload=body, cookie=self.local_cookie)
+    self.assertEqual((status, conflict['code']), (409, 'trip_changed'))
     old_client = {'action': 'select', 'revision': active['revision'], 'destination': place}
     code, regular, _ = self.request('/api/navigation/action', payload=old_client, cookie=self.local_cookie)
     self.assertEqual(code, 200)

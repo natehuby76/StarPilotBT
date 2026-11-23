@@ -496,6 +496,7 @@ export const SettingsPage = {
       <p class="gx-page-description" v-else-if="state.data?.page === 'torque/developer'">Adjust supported steering parameters.</p>
       <p class="gx-page-description" v-else-if="state.data?.page === 'lane'">Choose lane-centering behavior and alerts.</p>
       <p class="gx-page-description" v-else-if="state.data?.page === 'curve'">Set how the vehicle slows for curves ahead.</p>
+      <p class="gx-page-description" v-else-if="state.data?.page === 'navigation_planner'">Changes to navigation turn timing apply on your next drive.</p>
       <p class="gx-page-description" v-else-if="state.data?.page === 'slc'">Control how speed limits change your set speed.</p>
       <p class="gx-page-description" v-else-if="state.data?.page === 'wheel'">Assign what the steering-wheel controls do.</p>
       <p class="gx-page-description" v-else-if="['aggressive','standard','relaxed'].includes(state.data?.page)">Adjust acceleration, braking and following for this driving style.</p>

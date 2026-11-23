@@ -1082,6 +1082,7 @@ def make_server(*, port=8082, host='127.0.0.1', monitor=None, owner=None, crashe
           result = navigation_owner().snapshot(route_key if re.fullmatch(r'[0-9a-f]{16}', route_key) else None)
           result['phoneRoutePreviewVersion'] = 1
           result['phoneRouteTripVersion'] = 1
+          result['phoneRouteTripOnroad'] = True
         except (OSError, ValueError, RuntimeError):
           self.json(503, {'error': 'Navigation status is unavailable'})
         else:
@@ -2022,18 +2023,20 @@ def make_server(*, port=8082, host='127.0.0.1', monitor=None, owner=None, crashe
           return
 
         def permitted():
-          return self.settings_session() == identity and configuration_allowed()
+          # Starting guidance uses the same session rules as selecting a destination.
+          return self.settings_session() == identity
 
         try:
           if not permitted():
             raise PermissionError
           if not isinstance(payload, dict) or set(payload) != {'revision', 'destination', 'phoneRoute'}:
             raise ValidationError('Invalid iPhone trip')
-          result = navigation_owner().select_phone_route(payload['destination'], payload['phoneRoute'], payload['revision'], permitted)
+          with effect_lock:
+            result = navigation_owner().select_phone_route(payload['destination'], payload['phoneRoute'], payload['revision'], permitted)
         except ConflictError as exc:
-          self.json(409, {'error': str(exc)})
+          self.json(409, {'code': 'trip_changed', 'error': str(exc)})
         except PermissionError:
-          self.json(409, {'error': 'Park and reconnect before starting an iPhone route'})
+          self.json(401, {'error': 'Sign in to Galaxy'})
         except ValidationError as exc:
           self.json(400, {'error': str(exc)})
         except OSError:
