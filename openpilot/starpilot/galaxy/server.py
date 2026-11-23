@@ -1080,6 +1080,9 @@ def make_server(*, port=8082, host='127.0.0.1', monitor=None, owner=None, crashe
           route_key = ''
         try:
           result = navigation_owner().snapshot(route_key if re.fullmatch(r'[0-9a-f]{16}', route_key) else None)
+          result['phoneRoutePreviewVersion'] = 1
+          result['phoneRouteTripVersion'] = 1
+          result['phoneRouteTripOnroad'] = True
         except (OSError, ValueError, RuntimeError):
           self.json(503, {'error': 'Navigation status is unavailable'})
         else:
@@ -1743,7 +1746,7 @@ def make_server(*, port=8082, host='127.0.0.1', monitor=None, owner=None, crashe
                       '/api/models/laboratory', '/api/models/laboratory/download', '/api/models/laboratory/delete',
                       '/api/sounds/preview', '/api/sounds/download', '/api/sounds/cancel', '/api/software/action', '/api/drives/ignore',
                       '/api/recordings/delete-videos', '/api/sentry/notifications', '/api/sentry/events/delete', '/api/crash-reports/delete',
-                      '/api/navigation/search', '/api/navigation/action', '/api/navigation/offline', '/api/drive-state/action',
+                      '/api/navigation/search', '/api/navigation/action', '/api/navigation/phone-preview', '/api/navigation/phone-trip', '/api/navigation/offline', '/api/drive-state/action',
                       '/api/toyota-tools/action', '/api/vehicle-selection/preview', '/api/vehicle-selection/confirm'):
         self.json(405, {'error': 'Method unavailable'})
         return
@@ -1762,7 +1765,7 @@ def make_server(*, port=8082, host='127.0.0.1', monitor=None, owner=None, crashe
         size = int(self.headers.get('Content-Length', ''))
       except ValueError:
         size = -1
-      max_size = (256 * 1024 if path == '/api/settings/restore' else 66 * 1024 if path == '/api/settings/flm-backup/preview' else
+      max_size = (68 * 1024 if path == '/api/navigation/phone-trip' else 64 * 1024 if path == '/api/navigation/phone-preview' else 256 * 1024 if path == '/api/settings/restore' else 66 * 1024 if path == '/api/settings/flm-backup/preview' else
                   17408 if path in ('/api/ui/layout', '/api/ui/layout/preview') else 4096)
       if not 0 < size <= max_size:
         self.json(413, {'error': 'Invalid request size'})
@@ -2011,6 +2014,54 @@ def make_server(*, port=8082, host='127.0.0.1', monitor=None, owner=None, crashe
             self.json(200, result)
           else:
             self.json(401, {'error': 'Sign in to Galaxy'})
+        return
+      if path == '/api/navigation/phone-trip':
+        from openpilot.starpilot.navigation.owner import ConflictError, ValidationError
+        identity = self.settings_session()
+        if identity is None:
+          self.json(401, {'error': 'Sign in to Galaxy'})
+          return
+
+        def permitted():
+          # Starting guidance uses the same session rules as selecting a destination.
+          return self.settings_session() == identity
+
+        try:
+          if not permitted():
+            raise PermissionError
+          if not isinstance(payload, dict) or set(payload) != {'revision', 'destination', 'phoneRoute'}:
+            raise ValidationError('Invalid iPhone trip')
+          with effect_lock:
+            result = navigation_owner().select_phone_route(payload['destination'], payload['phoneRoute'], payload['revision'], permitted)
+        except ConflictError as exc:
+          self.json(409, {'code': 'trip_changed', 'error': str(exc)})
+        except PermissionError:
+          self.json(401, {'error': 'Sign in to Galaxy'})
+        except ValidationError as exc:
+          self.json(400, {'error': str(exc)})
+        except OSError:
+          self.json(503, {'error': 'Could not save the iPhone trip'})
+        else:
+          if self.settings_session() == identity:
+            self.json(200, result)
+          else:
+            self.json(401, {'error': 'Sign in to Galaxy'})
+        return
+      if path == '/api/navigation/phone-preview':
+        from openpilot.starpilot.navigation.phone_preview import preview_route
+        identity = self.settings_session()
+        if identity is None or not configuration_allowed():
+          self.json(409, {'error': 'Park and sign in to preview an iPhone route'})
+          return
+        try:
+          result = preview_route(payload)
+        except (ValueError, TypeError, IndexError, KeyError, OverflowError):
+          self.json(400, {'error': 'Invalid phone route'})
+          return
+        if self.settings_session() != identity or not configuration_allowed():
+          self.json(409, {'error': 'Park and reconnect to try again'})
+          return
+        self.json(200, result)
         return
       if path in ('/api/navigation/search', '/api/navigation/action'):
         from openpilot.starpilot.navigation.owner import ConflictError, ValidationError

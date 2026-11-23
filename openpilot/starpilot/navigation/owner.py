@@ -174,6 +174,7 @@ class NavigationOwner:
     self._lock = threading.RLock()
     self._searches = {}
     self._read_cache = None
+    self._phone_trip_cache = None
     self._params = None
     identity = hashlib.sha256(str(self.root.resolve()).encode()).hexdigest()[:24]
     if transient_root is not None:
@@ -273,9 +274,16 @@ class NavigationOwner:
         info = os.fstat(source.fileno())
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
           raise ValidationError('Navigation temporary storage is unavailable')
-        raw = source.read(16385)
+        key = (current['revision'], info.st_ino, info.st_size, info.st_mtime_ns)
+        cached = self._phone_trip_cache
+        if cached is not None and cached[0] == key and time.monotonic() < cached[1]['expires']:
+          return cached[1]
+        raw = source.read(70 * 1024 + 1)
       value = json.loads(raw)
-      if (len(raw) > 16384 or set(value) != {'version', 'revision', 'expires', 'destination'} or type(value['version']) is not int or value['version'] != 1 or
+      phone_trip = isinstance(value, dict) and value.get('version') == 2
+      fields = {'version', 'revision', 'expires', 'destination'}
+      if (not isinstance(value, dict) or len(raw) > (70 * 1024 if phone_trip else 16384) or set(value) != (fields | {'phoneRoute'} if phone_trip else fields) or
+          type(value['version']) is not int or value['version'] not in (1, 2) or
           not isinstance(value['revision'], str) or type(value['expires']) not in (float, int) or
           not math.isfinite(value['expires'])):
         raise ValueError
@@ -283,7 +291,10 @@ class NavigationOwner:
       if value['revision'] != current['revision'] or not time.monotonic() < value['expires'] <= time.monotonic() + ACTIVE_TTL:
         os.unlink(current['revision'] + '.json', dir_fd=directory)
         return None
-      return dict(value, destination=selected)
+      record = dict(value, destination=selected)
+      if phone_trip:
+        self._phone_trip_cache = (key, record)
+      return record
     except (ValueError, TypeError, KeyError):
       raise ValidationError('Navigation temporary destination could not be read') from None
     finally:
@@ -311,7 +322,9 @@ class NavigationOwner:
     current = self.read()
     active = self._read_active(current)
     if active is not None:
-      current['destination'] = dict(active['destination'], temporary=True)
+      current['destination'] = active['destination'] if active['version'] == 2 else dict(active['destination'], temporary=True)
+      if active['version'] == 2:
+        current['phoneRoute'] = active['phoneRoute']
     return current
 
   @contextmanager
@@ -322,7 +335,7 @@ class NavigationOwner:
         fcntl.flock(lock, fcntl.LOCK_EX)
         yield
 
-  def _change(self, transform, expected_revision: str, authorized, *, active_destination=None, preserve_active=False) -> dict:
+  def _change(self, transform, expected_revision: str, authorized, *, active_destination=None, preserve_active=False, phone_route=None) -> dict:
     with self._exclusive():
       current = self.read()
       if not isinstance(expected_revision, str) or current['revision'] != expected_revision:
@@ -339,8 +352,13 @@ class NavigationOwner:
         current['routingRevision'] = current['revision']
       if active_destination is not None:
         active = {'version':1, 'destination':active_destination, 'expires':time.monotonic() + ACTIVE_TTL}
+      if phone_route is not None:
+        active.update(version=2, phoneRoute=phone_route)
       if active is not None:
-        self._write_active(dict(active, revision=current['revision']))
+        record = dict(active, revision=current['revision'])
+        if record['version'] == 2 and len(json.dumps(record, allow_nan=False, separators=(',', ':'))) > 70 * 1024:
+          raise ValidationError('The iPhone route is too large')
+        self._write_active(record)
       committed = False
       fd, temporary = tempfile.mkstemp(dir=self.root, prefix='.settings-')
       try:
@@ -393,6 +411,8 @@ class NavigationOwner:
     status = ('disabled' if not document['enabled'] else 'needsKey' if not document['token'] else
               'noDestination' if document['destination'] is None else 'waitingForLocation')
     result = {key: document[key] for key in ('enabled', 'destination', 'recents', 'revision', 'turnSlowdownPercent')}
+    if 'phoneRoute' in document:
+      result['activeRouteSource'] = 'iphone'
     result.update({key: document[key] for key in ROUTE_AVOIDANCES})
     result['gpsSource'] = document['gpsSource']
     from openpilot.starpilot.gps.phone import phone_gps_status
@@ -975,7 +995,7 @@ class NavigationOwner:
 
   def _reject_temporary_promotion(self, doc, selected):
     active = self._read_active(doc)
-    if active is not None and active['destination']['id'] == selected['id']:
+    if active is not None and active['version'] == 1 and active['destination']['id'] == selected['id']:
       raise ValidationError('This place can be used for a route but cannot be saved')
 
   def select(self, value: dict, expected_revision: str, authorized) -> dict:
@@ -986,6 +1006,21 @@ class NavigationOwner:
       self._reject_temporary_promotion(doc, selected)
       self._navigate(doc, selected)
     return self._change(update, expected_revision, authorized)
+
+  def select_phone_route(self, place, payload, expected_revision, authorized):
+    from openpilot.starpilot.navigation.phone_preview import validate_trip
+    selected = destination(place)
+    try:
+      validate_trip(payload, selected)
+    except (KeyError, TypeError, IndexError, AttributeError, OverflowError, ValueError) as exc:
+      raise ValidationError('Invalid iPhone trip') from exc
+
+    def activate(doc):
+      if not doc['enabled'] or not doc['token']:
+        raise ValidationError('Enable and configure comma navigation first')
+      doc.update(destination=None, routeChoice=0)
+
+    return self._change(activate, expected_revision, authorized, active_destination=selected, phone_route=payload)
 
   def clear(self, expected_revision: str, authorized) -> dict:
     with self._lock:

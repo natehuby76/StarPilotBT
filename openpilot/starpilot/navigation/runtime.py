@@ -101,6 +101,10 @@ class RouteRuntime:
       self.routes = []
       self.fetch_key = None
       self.preview_only = False
+      self.phone_route_joined = False
+      if settings.get('phoneRoute') is not None:
+        from openpilot.starpilot.navigation.phone_preview import parse_phone_route
+        self.route = parse_phone_route(settings['phoneRoute'])
       self.retry_after = self.off_route_since = self.arrived_since = 0
     # A saved origin can draw a preview, but a fresh fix must calculate its own route.
     if position is not None and self.preview_only:
@@ -137,6 +141,10 @@ class RouteRuntime:
       self.route = selected_route
     if base_status != 'waitingForLocation':
       return result
+    phone_trip = settings.get('phoneRoute') is not None
+    if phone_trip and self.route is None:
+      result['status'] = 'routeUnavailable'
+      return result
     if position is None:
       if self.route is not None:
         result['route'] = self.route.preview()
@@ -162,6 +170,9 @@ class RouteRuntime:
       return result
     progress = self.route.progress(coordinates, speed, bearing)
     fresh = now_ns <= stamp + GPS_MAX_AGE_NS
+    if phone_trip and fresh and not progress.off_route and position[0] >= drive_id > 0 and progress.separation <= JOINED_M:
+      if distance(coordinates, self.route.points[0]) <= JOINED_M:
+        self.phone_route_joined = True
     off_route = fresh and progress.off_route and self._may_reroute(coordinates, progress, selected)
     self.off_route_since = (self.off_route_since or now_ns) if off_route else 0
     arriving = progress.arrived or (speed is not None and speed < 2 and
@@ -171,15 +182,16 @@ class RouteRuntime:
     if self.off_route_since and now_ns - self.off_route_since >= hold:
       self.route = None
       self.routes = []
-      result['status'] = 'routing'
+      result['status'] = 'routeUnavailable' if phone_trip else 'routing'
       return result
     arrived = self.arrived_since and now_ns - self.arrived_since >= ARRIVED_NS
-    self._traffic_eta(now_ns, credentials[1], coordinates, speed, bearing, settings['destination'], exclusions, progress.instruction)
+    self._traffic_eta(now_ns, '' if phone_trip else credentials[1], coordinates, speed, bearing, settings['destination'], exclusions, progress.instruction)
     if self.arrived_since and now_ns - self.arrived_since >= END_ROUTE_NS:
       self._end_route(settings['revision'])
     result.update(status='arrived' if arrived else 'guiding', instruction=progress.instruction,
                   nextManeuver=progress.next_maneuver, route=self.route.preview(),
-                  controlValid=bool(speed is not None and fresh and drive_id > 0 and not progress.off_route and not arriving and stamp >= drive_id))
+                  controlValid=bool(speed is not None and fresh and drive_id > 0 and not progress.off_route and not arriving and stamp >= drive_id
+                                    and (not phone_trip or self.phone_route_joined)))
     return result
 
   def _may_reroute(self, coordinates, progress, destination) -> bool:

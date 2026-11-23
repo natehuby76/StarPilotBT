@@ -592,3 +592,28 @@ def test_no_reroute_in_the_destination_garage(tmp_path, monkeypatch):
   drive(runtime, 2, 2, (.03, 0.), 15., 90.)
   assert drive(runtime, 10_000_000_000, 20, (.049, .0015), 3., 180.)['status'] in ('guiding', 'arrived')
   assert len(executor.jobs) == 1
+
+def test_phone_trip_progress_and_return_to_standard_routing(tmp_path):
+  owner = configured(tmp_path)
+  place = {'name': 'Library', 'latitude': .01, 'longitude': .01}
+  steps = [{'distance': 1112., 'duration': 90., 'maneuver': {'type': 'depart'}},
+           {'distance': 1112., 'duration': 90., 'maneuver': {'type': 'turn', 'modifier': 'left'}},
+           {'distance': 0., 'duration': 0., 'maneuver': {'type': 'arrive'}}]
+  route = {'geometry': {'coordinates': [[0, 0], [.01, 0], [.01, .01]]},
+           'distance': 2224., 'duration': 180., 'legs': [{'steps': steps}]}
+  owner.select_phone_route(place, {'version': 1, 'route': route}, owner.read()['revision'], True)
+  executor = Executor()
+  runtime = RouteRuntime(owner, executor=executor)
+  def update(sec, pos, age=0):
+    return runtime.update(sec * 10**9, ((sec - age) * 10**9, pos, 9., 90.), 10**9)
+  assert not update(5, (.004, 0))['controlValid']
+  assert update(6, (0, 0))['controlValid']
+  active = update(7, (.008, 0))
+  assert active['instruction']['maneuverModifier'] == 'left' and active['controlValid']
+  assert not update(11, (.008, 0), age=4)['controlValid']
+  assert not update(12, (.005, .002))['controlValid']
+  assert update(16, (.005, .002))['status'] == 'routeUnavailable'
+  assert update(18, (.005, 0))['status'] == 'routeUnavailable'
+  assert not executor.jobs
+  owner.select(place, owner.read()['revision'], True)
+  assert update(19, (.005, 0))['status'] == 'routing' and len(executor.jobs) == 1
