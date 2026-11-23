@@ -15,5 +15,5 @@ jobs:
         with:
           persist-credentials: false
       - run: ./tools/op.sh setup
-      - run: scons -j2 openpilot/common/libparams_c.so msgq_repo/msgq/_ipc.so
+      - run: scons -j2 openpilot/common/libparams_c.so msgq_repo/msgq/_ipc.so openpilot/selfdrive/controls/lib/longitudinal_mpc_lib/c_generated_code/acados_ocp_solver_pyx.so
       - run: python -m pytest -q openpilot/starpilot/navigation/tests openpilot/starpilot/galaxy/tests/test_navigation_http.py openpilot/starpilot/galaxy/tests/test_vehicle_navigation.py openpilot/starpilot/system/starport/tests/test_nav_status.py openpilot/starpilot/system/starport/tests/test_projection_favorites.py openpilot/starpilot/galaxy_bluetooth/tests
